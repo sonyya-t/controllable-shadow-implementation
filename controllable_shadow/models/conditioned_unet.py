@@ -67,6 +67,10 @@ class ConditionedSDXLUNet(nn.Module):
         # SDXL will add this to its own computed timestep embeddings
         self.light_projection = nn.Linear(768, 1280)
 
+        # Match UNet's dtype (FP16)
+        unet_dtype = next(self.unet.parameters()).dtype
+        self.light_projection = self.light_projection.to(unet_dtype)
+
         print(f"✓ Conditioned SDXL UNet initialized (light embeddings will be added to SDXL timestep)")
 
     def encode_light_parameters(
@@ -136,24 +140,34 @@ class ConditionedSDXLUNet(nn.Module):
             )
 
         # 3. Run UNet forward pass
+        # Ensure all inputs match UNet dtype (FP16)
+        target_dtype = sample.dtype
+
+        # Convert light embeddings to target dtype
+        light_emb = light_emb.to(target_dtype)
+
         # Create dummy encoder_hidden_states (not used since cross-attention removed)
-        encoder_hidden_states = torch.zeros(batch_size, 77, 768, device=sample.device)
+        encoder_hidden_states = torch.zeros(batch_size, 77, 768, device=sample.device, dtype=target_dtype)
 
         # SDXL uses added_cond_kwargs to inject additional embeddings
         # SDXL's add_embedding: concat(text_embeds[1280], time_ids[6]) → Linear → 1280
         # Then: timestep_emb + add_emb
         # We pass light embeddings as text_embeds, and proper time_ids
         added_cond_kwargs = {
-            "text_embeds": light_emb,  # Light embeddings (B, 1280)
+            "text_embeds": light_emb,  # Light embeddings (B, 1280) in FP16
             # time_ids format: [h_orig, w_orig, crop_top, crop_left, h_target, w_target]
             # Use image size (1024) for all to avoid NaN from zeros
             "time_ids": torch.tensor([[1024, 1024, 0, 0, 1024, 1024]],
                                     device=sample.device,
-                                    dtype=torch.float32).repeat(batch_size, 1),
+                                    dtype=target_dtype).repeat(batch_size, 1),
         }
 
         # Forward through UNet
         # SDXL will handle timestep embedding internally
+        # Ensure timestep matches UNet dtype (FP16)
+        if timestep.dtype != sample.dtype:
+            timestep = timestep.to(sample.dtype)
+
         output = self.unet(
             sample=sample,
             timestep=timestep,
