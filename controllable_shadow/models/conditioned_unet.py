@@ -107,14 +107,19 @@ class ConditionedSDXLUNet(nn.Module):
             timesteps: Timestep values (B,)
 
         Returns:
-            Timestep embeddings (B, 320 or 1280 depending on UNet)
+            Timestep embeddings (B, 320) for concat strategy
+            or (B, 1280) for additive strategy
         """
-        # SDXL uses time_proj and time_embedding modules
-        # We need to extract timestep embeddings before they're combined with other info
+        # SDXL uses time_proj (320-dim) and time_embedding (1280-dim) modules
 
-        # Get the timestep projection from SDXL UNet
-        # This is typically a sinusoidal embedding at dimension 320
+        # Step 1: Get sinusoidal timestep projection (320-dim)
         t_emb = self.unet.unet.time_proj(timesteps)
+
+        # Step 2: For additive strategy, we need to project to 1280-dim first
+        # For concat strategy, we keep it at 320-dim
+        if self.conditioning_strategy == "additive":
+            # Project 320 → 1280 using the UNet's time_embedding module
+            t_emb = self.unet.unet.time_embedding(t_emb)
 
         return t_emb
 
@@ -169,14 +174,29 @@ class ConditionedSDXLUNet(nn.Module):
         light_emb = self.encode_light_parameters(theta, phi, size)
 
         # 2. Get timestep embeddings from UNet
+        # For additive: this already returns 1280-dim
+        # For concat: this returns 320-dim
         timestep_emb = self.get_timestep_embedding(timestep)
 
         # 3. Combine timestep + light embeddings
         combined_emb = self.combine_embeddings(timestep_emb, light_emb)
 
-        # 4. Process combined embedding through UNet's time_embedding module
-        # This projects to the final dimension and prepares for injection
-        emb = self.unet.unet.time_embedding(combined_emb)
+        # 4. For additive strategy, combined_emb is already 1280-dim (ready to use)
+        # For concat strategy, we need to project to 1280-dim
+        if self.conditioning_strategy == "concat":
+            emb = self.unet.unet.time_embedding(combined_emb)
+        else:
+            # Already 1280-dim from additive combination
+            emb = combined_emb
+
+        # Validate embedding dimension
+        expected_dim = 1280  # SDXL time embedding dimension
+        if emb.shape[-1] != expected_dim:
+            raise RuntimeError(
+                f"Combined embedding has wrong dimension: {emb.shape[-1]}, expected {expected_dim}. "
+                f"Timestep emb: {timestep_emb.shape}, Light emb: {light_emb.shape}, "
+                f"Strategy: {self.conditioning_strategy}"
+            )
 
         # 5. Run UNet forward pass with combined embeddings
         # We bypass normal timestep processing since we've already combined embeddings
