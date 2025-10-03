@@ -32,12 +32,16 @@ def create_dataloaders(
     Returns:
         Tuple of (train_loader, val_loader)
     """
+# Filter kwargs for ShadowBenchmarkDataset to exclude root_dir
+    benchmark_kwargs = {k: v for k, v in kwargs.items() if k != 'root_dir'}
+
+
     if dataset_type == "benchmark":
         # HuggingFace benchmark dataset
         train_dataset = ShadowBenchmarkDataset(
             split="train",
             image_size=image_size,
-            **kwargs
+            **benchmark_kwargs
         )
 
         # Benchmark only has train split, so we'll use a portion for validation
