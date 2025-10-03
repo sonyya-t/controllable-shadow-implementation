@@ -160,6 +160,7 @@ class SDXLUNetForShadows(nn.Module):
         sample: torch.Tensor,
         timestep: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
+        added_cond_kwargs: Optional[Dict] = None,
         return_dict: bool = True,
     ) -> torch.Tensor:
         """
@@ -170,6 +171,7 @@ class SDXLUNetForShadows(nn.Module):
             timestep: Timestep (B,) or scalar
             encoder_hidden_states: Light parameter embeddings (B, 768)
                 This replaces text embeddings in original SDXL
+            added_cond_kwargs: Additional conditioning (text_embeds, time_ids for SDXL)
             return_dict: Whether to return dict or tensor
 
         Returns:
@@ -186,6 +188,7 @@ class SDXLUNetForShadows(nn.Module):
             sample=sample,
             timestep=timestep,
             encoder_hidden_states=encoder_hidden_states,
+            added_cond_kwargs=added_cond_kwargs,
             return_dict=return_dict,
         )
 
