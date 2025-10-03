@@ -135,12 +135,13 @@ class LightParameterConditioning(nn.Module):
         size_norm = (size_clamped - 2.0) / 6.0  # (size - min) / (max - min)
 
         # Encode each parameter
-        theta_emb = self.encode_scalar(theta_norm.unsqueeze(-1))
-        phi_emb = self.encode_scalar(phi_norm.unsqueeze(-1))
-        size_emb = self.encode_scalar(size_norm.unsqueeze(-1))
+        # encode_scalar expects (..., 1) and returns (..., embedding_dim)
+        theta_emb = self.encode_scalar(theta_norm.unsqueeze(-1)).squeeze(1)  # (B, 256)
+        phi_emb = self.encode_scalar(phi_norm.unsqueeze(-1)).squeeze(1)      # (B, 256)
+        size_emb = self.encode_scalar(size_norm.unsqueeze(-1)).squeeze(1)    # (B, 256)
 
         # Concatenate embeddings
-        combined_emb = torch.cat([theta_emb, phi_emb, size_emb], dim=-1)
+        combined_emb = torch.cat([theta_emb, phi_emb, size_emb], dim=-1)  # (B, 768)
 
         return combined_emb
     
