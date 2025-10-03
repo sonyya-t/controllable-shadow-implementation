@@ -10,16 +10,15 @@ Based on paper specifications:
 
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
 import argparse
 from pathlib import Path
 import json
 from tqdm import tqdm
 import time
-from typing import Dict, Optional
+from typing import Dict
 
 from controllable_shadow.models import ShadowDiffusionModel, CheckpointManager
-from controllable_shadow.data import create_dataloaders, get_dataset_statistics
+from controllable_shadow.data import create_dataloaders
 from controllable_shadow.utils.debugging import MemoryProfiler, PerformanceProfiler
 
 
