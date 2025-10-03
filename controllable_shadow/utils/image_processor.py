@@ -90,7 +90,7 @@ class ImageProcessor:
         
         return x, y, x + w, y + h
     
-    def _create_object_mask(self, image: Image.Image, bbox: Tuple[int, int, int, h]) -> Image.Image:
+    def _create_object_mask(self, image: Image.Image, bbox: Tuple[int, int, int, int]) -> Image.Image:
         """
         Create binary mask for object based on bounding box and analysis.
         """
