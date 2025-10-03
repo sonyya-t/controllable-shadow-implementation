@@ -140,12 +140,16 @@ class ConditionedSDXLUNet(nn.Module):
         encoder_hidden_states = torch.zeros(batch_size, 77, 768, device=sample.device)
 
         # SDXL uses added_cond_kwargs to inject additional embeddings
-        # We pass ONLY light embeddings via text_embeds
-        # SDXL will internally do: time_embedding(timestep) + text_embeds
-        # This ensures timestep is embedded only ONCE (by SDXL), then added to light embeddings
+        # SDXL's add_embedding: concat(text_embeds[1280], time_ids[6]) → Linear → 1280
+        # Then: timestep_emb + add_emb
+        # We pass light embeddings as text_embeds, and proper time_ids
         added_cond_kwargs = {
-            "text_embeds": light_emb,  # ONLY light embeddings (B, 1280)
-            "time_ids": torch.zeros(batch_size, 6, device=sample.device),
+            "text_embeds": light_emb,  # Light embeddings (B, 1280)
+            # time_ids format: [h_orig, w_orig, crop_top, crop_left, h_target, w_target]
+            # Use image size (1024) for all to avoid NaN from zeros
+            "time_ids": torch.tensor([[1024, 1024, 0, 0, 1024, 1024]],
+                                    device=sample.device,
+                                    dtype=torch.float32).repeat(batch_size, 1),
         }
 
         # Forward through UNet

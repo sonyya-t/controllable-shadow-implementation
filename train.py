@@ -286,10 +286,14 @@ class Trainer:
 
             # Gradient accumulation
             if (batch_idx + 1) % self.args.gradient_accumulation == 0:
+                # Gradient clipping to prevent explosion
                 if self.scaler is not None:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.get_trainable_parameters(), max_norm=1.0)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
+                    torch.nn.utils.clip_grad_norm_(self.model.get_trainable_parameters(), max_norm=1.0)
                     self.optimizer.step()
 
                 self.optimizer.zero_grad()
