@@ -272,7 +272,7 @@ class VAEWrapper(nn.Module):
         self.vae = AutoencoderKL.from_pretrained(
             pretrained_model_name,
             subfolder="vae",
-            torch_dtype=torch.float16,
+            torch_dtype=torch.float32,  # Use FP32 to avoid NaN in encoding
         )
 
         # Freeze VAE weights
@@ -297,12 +297,19 @@ class VAEWrapper(nn.Module):
         # Ensure VAE is in eval mode
         self.vae.eval()
 
+        # Convert to FP32 for stable encoding
+        original_dtype = images.dtype
+        images = images.to(torch.float32)
+
         # Encode
         latent_dist = self.vae.encode(images).latent_dist
         latents = latent_dist.sample()
 
         # SDXL uses scaling factor
         latents = latents * self.vae.config.scaling_factor
+
+        # Convert back to original dtype if needed
+        latents = latents.to(original_dtype)
 
         return latents
 
@@ -320,11 +327,18 @@ class VAEWrapper(nn.Module):
         # Ensure VAE is in eval mode
         self.vae.eval()
 
+        # Convert to FP32 for stable decoding
+        original_dtype = latents.dtype
+        latents = latents.to(torch.float32)
+
         # Unscale latents
         latents = latents / self.vae.config.scaling_factor
 
         # Decode
         images = self.vae.decode(latents).sample
+
+        # Convert back to original dtype if needed
+        images = images.to(original_dtype)
 
         return images
 
