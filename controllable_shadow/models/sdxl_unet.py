@@ -55,7 +55,7 @@ class SDXLUNetForShadows(nn.Module):
         self.unet = UNet2DConditionModel.from_pretrained(
             pretrained_model_name,
             subfolder="unet",
-            torch_dtype=torch.float32,
+            torch_dtype=torch.float16,
         )
 
         # Store original config
@@ -259,7 +259,7 @@ class VAEWrapper(nn.Module):
         self.vae = AutoencoderKL.from_pretrained(
             pretrained_model_name,
             subfolder="vae",
-            torch_dtype=torch.float32,
+            torch_dtype=torch.float16,
         )
 
         # Freeze VAE weights
