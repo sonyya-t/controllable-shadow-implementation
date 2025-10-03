@@ -426,9 +426,9 @@ def create_benchmark_evaluation(model_results: Dict[str, torch.Tensor],
                 direction_scores[key] = np.mean(direction_scores[key])
         
         # Combine results
-        evaluation_results[track] = {
-            **{k: v.item() for k, v in quality_scores.items()},
-            **direction_scores if 'direction' in track else {}
-        }
+        evaluation_results[track] = {k: v.item() for k, v in quality_scores.items()}
+        
+        if 'direction' in track:
+            evaluation_results[track].update(direction_scores)
     
     return evaluation_results
