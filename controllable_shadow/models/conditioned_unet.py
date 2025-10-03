@@ -40,8 +40,8 @@ class ConditionedSDXLUNet(nn.Module):
         Args:
             pretrained_model_name: HuggingFace SDXL model ID
             conditioning_strategy: How to combine timestep + light embeddings
-                "additive": Add light embeddings to timestep embeddings
-                "concat": Concatenate and project to final dimension
+                "additive": SDXL will add light embeddings to its timestep embeddings
+                "concat": Not recommended - use additive instead
             embedding_dim: Embedding dimension per light parameter
         """
         super().__init__()
@@ -63,22 +63,11 @@ class ConditionedSDXLUNet(nn.Module):
             max_freq=10000.0,
         )
 
-        # Timestep + light embedding combiner
-        if conditioning_strategy == "additive":
-            self.embedding_combiner = AdditiveTimestepLightEmbedding(
-                light_conditioning_dim=768,
-                time_embed_dim=1280,
-            )
-        elif conditioning_strategy == "concat":
-            self.embedding_combiner = TimestepLightEmbedding(
-                timestep_dim=320,
-                light_conditioning_dim=768,
-                time_embed_dim=1280,
-            )
-        else:
-            raise ValueError(f"Unknown conditioning strategy: {conditioning_strategy}")
+        # Project light embeddings to SDXL's time embedding dimension (1280)
+        # SDXL will add this to its own computed timestep embeddings
+        self.light_projection = nn.Linear(768, 1280)
 
-        print(f"✓ Conditioned SDXL UNet initialized ({conditioning_strategy} strategy)")
+        print(f"✓ Conditioned SDXL UNet initialized (light embeddings will be added to SDXL timestep)")
 
     def encode_light_parameters(
         self,
@@ -87,7 +76,7 @@ class ConditionedSDXLUNet(nn.Module):
         size: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Encode light parameters to embedding.
+        Encode light parameters to embedding and project to 1280-dim.
 
         Args:
             theta: Polar angle in degrees (B,)
@@ -95,50 +84,15 @@ class ConditionedSDXLUNet(nn.Module):
             size: Light size parameter (B,)
 
         Returns:
-            Light embeddings (B, 768)
+            Light embeddings projected to 1280-dim (B, 1280)
         """
-        return self.light_encoder(theta, phi, size)
+        # Encode to 768-dim
+        light_emb = self.light_encoder(theta, phi, size)  # (B, 768)
 
-    def get_timestep_embedding(self, timesteps: torch.Tensor) -> torch.Tensor:
-        """
-        Get sinusoidal timestep embeddings from SDXL UNet.
+        # Project to 1280-dim to match SDXL time embedding dimension
+        light_emb_projected = self.light_projection(light_emb)  # (B, 1280)
 
-        Args:
-            timesteps: Timestep values (B,)
-
-        Returns:
-            Timestep embeddings (B, 320) for concat strategy
-            or (B, 1280) for additive strategy
-        """
-        # SDXL uses time_proj (320-dim) and time_embedding (1280-dim) modules
-
-        # Step 1: Get sinusoidal timestep projection (320-dim)
-        t_emb = self.unet.unet.time_proj(timesteps)
-
-        # Step 2: For additive strategy, we need to project to 1280-dim first
-        # For concat strategy, we keep it at 320-dim
-        if self.conditioning_strategy == "additive":
-            # Project 320 → 1280 using the UNet's time_embedding module
-            t_emb = self.unet.unet.time_embedding(t_emb)
-
-        return t_emb
-
-    def combine_embeddings(
-        self,
-        timestep_emb: torch.Tensor,
-        light_emb: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Combine timestep and light embeddings.
-
-        Args:
-            timestep_emb: Timestep embeddings (B, 320 or 1280)
-            light_emb: Light parameter embeddings (B, 768)
-
-        Returns:
-            Combined embeddings (B, 1280)
-        """
-        return self.embedding_combiner(timestep_emb, light_emb)
+        return light_emb_projected
 
     def forward(
         self,
@@ -170,47 +124,32 @@ class ConditionedSDXLUNet(nn.Module):
         if timestep.dim() == 0:
             timestep = timestep.expand(batch_size)
 
-        # 1. Encode light parameters (θ, φ, s) → 768-dim
-        light_emb = self.encode_light_parameters(theta, phi, size)
+        # 1. Encode light parameters (θ, φ, s) → 1280-dim
+        # This returns projected light embeddings ready to be added to timestep
+        light_emb = self.encode_light_parameters(theta, phi, size)  # (B, 1280)
 
-        # 2. Get timestep embeddings from UNet
-        # For additive: this already returns 1280-dim
-        # For concat: this returns 320-dim
-        timestep_emb = self.get_timestep_embedding(timestep)
-
-        # 3. Combine timestep + light embeddings
-        combined_emb = self.combine_embeddings(timestep_emb, light_emb)
-
-        # 4. For additive strategy, combined_emb is already 1280-dim (ready to use)
-        # For concat strategy, we need to project to 1280-dim
-        if self.conditioning_strategy == "concat":
-            emb = self.unet.unet.time_embedding(combined_emb)
-        else:
-            # Already 1280-dim from additive combination
-            emb = combined_emb
-
-        # Validate embedding dimension
+        # 2. Validate embedding dimension
         expected_dim = 1280  # SDXL time embedding dimension
-        if emb.shape[-1] != expected_dim:
+        if light_emb.shape[-1] != expected_dim:
             raise RuntimeError(
-                f"Combined embedding has wrong dimension: {emb.shape[-1]}, expected {expected_dim}. "
-                f"Timestep emb: {timestep_emb.shape}, Light emb: {light_emb.shape}, "
-                f"Strategy: {self.conditioning_strategy}"
+                f"Light embedding has wrong dimension: {light_emb.shape[-1]}, expected {expected_dim}"
             )
 
-        # 5. Run UNet forward pass
+        # 3. Run UNet forward pass
         # Create dummy encoder_hidden_states (not used since cross-attention removed)
         encoder_hidden_states = torch.zeros(batch_size, 77, 768, device=sample.device)
 
         # SDXL uses added_cond_kwargs to inject additional embeddings
-        # We'll use text_embeds to pass our combined light+time embedding
+        # We pass ONLY light embeddings via text_embeds
+        # SDXL will internally do: time_embedding(timestep) + text_embeds
+        # This ensures timestep is embedded only ONCE (by SDXL), then added to light embeddings
         added_cond_kwargs = {
-            "text_embeds": emb,  # Our combined (timestep + light) embedding
+            "text_embeds": light_emb,  # ONLY light embeddings (B, 1280)
             "time_ids": torch.zeros(batch_size, 6, device=sample.device),
         }
 
         # Forward through UNet
-        # Pass real timestep - SDXL will compute its own time_emb and ADD our text_embeds to it
+        # SDXL will handle timestep embedding internally
         output = self.unet(
             sample=sample,
             timestep=timestep,
@@ -231,7 +170,7 @@ class ConditionedSDXLUNet(nn.Module):
     def print_conditioning_flow(self):
         """Print how conditioning flows through the network."""
         print("\n" + "="*60)
-        print("Conditioning Flow Diagram")
+        print("Conditioning Flow Diagram (FIXED - No Double Embedding)")
         print("="*60)
         print()
         print("Light Parameters (θ, φ, s)")
@@ -240,16 +179,22 @@ class ConditionedSDXLUNet(nn.Module):
         print("    ↓")
         print("Light Embedding: 768-dim (256 × 3)")
         print("    ↓")
-        print("    ├─→ Timestep: t → Sinusoidal → 320-dim")
+        print("Projection: 768-dim → 1280-dim")
+        print("    ↓")
+        print("Light Embedding (projected): 1280-dim")
         print("    │")
-        print(f"    └─→ Combine ({self.conditioning_strategy})")
-        print("         ↓")
-        print("    Combined Embedding: 1280-dim")
-        print("         ↓")
-        print("    Time Embedding Module (projection)")
-        print("         ↓")
-        print("    Final Embedding: 1280-dim")
-        print("         ↓")
+        print("    │   Passed to SDXL via added_cond_kwargs['text_embeds']")
+        print("    │")
+        print("    ├─→ Timestep: t")
+        print("    │       ↓")
+        print("    │   SDXL computes: time_proj(t) → 320-dim")
+        print("    │       ↓")
+        print("    │   time_embedding(·) → 1280-dim")
+        print("    │       ↓")
+        print("    └─→ SDXL adds: time_emb + text_embeds")
+        print("             ↓")
+        print("    Final Embedding: 1280-dim (timestep + light)")
+        print("             ↓")
         print("    ┌────────────────────────────┐")
         print("    │  UNet Blocks (injected)   │")
         print("    │  - Down blocks             │")
