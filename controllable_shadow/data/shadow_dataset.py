@@ -111,9 +111,9 @@ class ShadowBenchmarkDataset(Dataset):
 
         # Load images
         # Note: The exact field names might vary - adjust based on actual dataset structure
-        object_image = self._load_image(sample, 'image')
-        mask = self._load_mask(sample, 'mask')
-        shadow_map = self._load_shadow(sample, 'shadow')
+        object_image = self._load_image(sample, 'image.png')
+        mask = self._load_mask(sample, 'mask.png')
+        shadow_map = self._load_shadow(sample, 'shadow.png')
 
         # Extract light parameters from metadata
         metadata = sample.get('metadata', {})
