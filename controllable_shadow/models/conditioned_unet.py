@@ -248,10 +248,20 @@ class ConditionedSDXLUNet(nn.Module):
 
             # Forward pass with dummy timestep (will be overridden by hook)
             dummy_timestep = torch.zeros(sample.shape[0], device=sample.device)
+
+            # SDXL requires added_cond_kwargs for additional embeddings
+            # We provide dummy values since we're using our own conditioning
+            batch_size = sample.shape[0]
+            added_cond_kwargs = {
+                "text_embeds": torch.zeros(batch_size, 1280, device=sample.device),
+                "time_ids": torch.zeros(batch_size, 6, device=sample.device),
+            }
+
             output = self.unet(
                 sample=sample,
                 timestep=dummy_timestep,
                 encoder_hidden_states=encoder_hidden_states,
+                added_cond_kwargs=added_cond_kwargs,
                 return_dict=False,
             )
 
