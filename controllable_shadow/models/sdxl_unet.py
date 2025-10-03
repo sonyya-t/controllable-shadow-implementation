@@ -50,12 +50,12 @@ class SDXLUNetForShadows(nn.Module):
         self.conditioning_dim = conditioning_dim
         self.pretrained_model_name = pretrained_model_name
 
-        # Load base SDXL UNet
+        # Load base SDXL UNet in FP16 to save memory
         print(f"Loading SDXL UNet from {pretrained_model_name}...")
         self.unet = UNet2DConditionModel.from_pretrained(
             pretrained_model_name,
             subfolder="unet",
-            torch_dtype=torch.float32,
+            torch_dtype=torch.float16,  # FP16 to save memory
         )
 
         # Store original config
@@ -292,17 +292,24 @@ class VAEWrapper(nn.Module):
             images: RGB images (B, 3, H, W) in range [-1, 1]
 
         Returns:
-            Latents (B, 4, H//8, W//8)
+            Latents (B, 4, H//8, W//8) in FP16
         """
         # Ensure VAE is in eval mode
         self.vae.eval()
 
+        # Convert to FP32 for VAE encoding (VAE is FP32)
+        original_dtype = images.dtype
+        images_fp32 = images.float()
+
         # Encode
-        latent_dist = self.vae.encode(images).latent_dist
+        latent_dist = self.vae.encode(images_fp32).latent_dist
         latents = latent_dist.sample()
 
         # SDXL uses scaling factor
         latents = latents * self.vae.config.scaling_factor
+
+        # Convert back to FP16 for UNet
+        latents = latents.to(original_dtype)
 
         return latents
 
@@ -320,11 +327,18 @@ class VAEWrapper(nn.Module):
         # Ensure VAE is in eval mode
         self.vae.eval()
 
+        # Convert to FP32 for VAE decoding
+        original_dtype = latents.dtype
+        latents_fp32 = latents.float()
+
         # Unscale latents
-        latents = latents / self.vae.config.scaling_factor
+        latents_fp32 = latents_fp32 / self.vae.config.scaling_factor
 
         # Decode
-        images = self.vae.decode(latents).sample
+        images = self.vae.decode(latents_fp32).sample
+
+        # Convert back to original dtype
+        images = images.to(original_dtype)
 
         return images
 

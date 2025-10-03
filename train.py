@@ -39,8 +39,8 @@ def parse_args():
                         help="Data directory (for custom dataset)")
     parser.add_argument("--cache_dir", type=str, default=None,
                         help="Cache directory for HuggingFace datasets")
-    parser.add_argument("--image_size", type=int, default=1024,
-                        help="Image size")
+    parser.add_argument("--image_size", type=int, default=512,
+                        help="Image size (use 512 to save memory, 1024 for full resolution)")
 
     # Training (from paper)
     parser.add_argument("--batch_size", type=int, default=2,
@@ -59,6 +59,8 @@ def parse_args():
                         help="Use mixed precision training")
     parser.add_argument("--gradient_checkpointing", action="store_true",
                         help="Use gradient checkpointing (saves memory, slower)")
+    parser.add_argument("--cpu_offload", action="store_true",
+                        help="Offload VAE to CPU (saves VRAM, slower)")
     parser.add_argument("--num_workers", type=int, default=4,
                         help="Number of dataloader workers")
 
@@ -241,28 +243,24 @@ class Trainer:
         Returns:
             Dictionary with loss and metrics
         """
-        # Move batch to device
-        object_image = batch['object_image'].to(self.device)
-        mask = batch['mask'].to(self.device)
-        shadow_map = batch['shadow_map'].to(self.device)
-        theta = batch['theta'].to(self.device)
+        # Move batch to device (or CPU if offloading VAE)
+        device = 'cpu' if self.args.cpu_offload else self.device
+
+        object_image = batch['object_image'].to(device)
+        mask = batch['mask'].to(device)
+        shadow_map = batch['shadow_map'].to(device)
+        theta = batch['theta'].to(self.device)  # Light params stay on GPU
         phi = batch['phi'].to(self.device)
         size = batch['size'].to(self.device)
 
-        # Forward pass with mixed precision
-        if self.scaler is not None:
-            with torch.cuda.amp.autocast():
-                loss_dict = self.model.compute_rectified_flow_loss(
-                    object_image, mask, shadow_map, theta, phi, size
-                )
-        else:
-            loss_dict = self.model.compute_rectified_flow_loss(
-                object_image, mask, shadow_map, theta, phi, size
-            )
+        # Forward pass (UNet is FP16, VAE is FP32 - no autocast needed)
+        loss_dict = self.model.compute_rectified_flow_loss(
+            object_image, mask, shadow_map, theta, phi, size
+        )
 
         loss = loss_dict['loss'] / self.args.gradient_accumulation
 
-        # Backward pass
+        # Backward pass (use scaler for FP16 gradients)
         if self.scaler is not None:
             self.scaler.scale(loss).backward()
         else:
