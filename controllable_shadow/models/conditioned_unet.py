@@ -90,11 +90,15 @@ class ConditionedSDXLUNet(nn.Module):
         Returns:
             Light embeddings projected to 1280-dim (B, 1280)
         """
-        # Encode to 768-dim
-        light_emb = self.light_encoder(theta, phi, size)  # (B, 768)
+        # Encode to 768-dim (outputs FP32)
+        light_emb = self.light_encoder(theta, phi, size)  # (B, 768) FP32
+
+        # Convert to projection layer's dtype (FP16)
+        projection_dtype = next(self.light_projection.parameters()).dtype
+        light_emb = light_emb.to(projection_dtype)
 
         # Project to 1280-dim to match SDXL time embedding dimension
-        light_emb_projected = self.light_projection(light_emb)  # (B, 1280)
+        light_emb_projected = self.light_projection(light_emb)  # (B, 1280) FP16
 
         return light_emb_projected
 
