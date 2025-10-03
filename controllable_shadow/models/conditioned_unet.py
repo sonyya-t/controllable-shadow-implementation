@@ -198,80 +198,29 @@ class ConditionedSDXLUNet(nn.Module):
                 f"Strategy: {self.conditioning_strategy}"
             )
 
-        # 5. Run UNet forward pass with combined embeddings
-        # We bypass normal timestep processing since we've already combined embeddings
+        # 5. Run UNet forward pass
         # Create dummy encoder_hidden_states (not used since cross-attention removed)
         encoder_hidden_states = torch.zeros(batch_size, 77, 768, device=sample.device)
 
-        # Forward through UNet with modified timestep embeddings
-        # We need to manually handle the forward pass to inject our custom embeddings
-        output = self._forward_unet_with_custom_embeddings(
-            sample, emb, encoder_hidden_states
+        # SDXL uses added_cond_kwargs to inject additional embeddings
+        # We'll use text_embeds to pass our combined light+time embedding
+        added_cond_kwargs = {
+            "text_embeds": emb,  # Our combined (timestep + light) embedding
+            "time_ids": torch.zeros(batch_size, 6, device=sample.device),
+        }
+
+        # Forward through UNet
+        # Pass real timestep - SDXL will compute its own time_emb and ADD our text_embeds to it
+        output = self.unet(
+            sample=sample,
+            timestep=timestep,
+            encoder_hidden_states=encoder_hidden_states,
+            added_cond_kwargs=added_cond_kwargs,
+            return_dict=False,
         )
 
         if return_dict:
             return {"sample": output}
-        return output
-
-    def _forward_unet_with_custom_embeddings(
-        self,
-        sample: torch.Tensor,
-        emb: torch.Tensor,
-        encoder_hidden_states: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Forward pass through UNet with custom embeddings.
-
-        Uses a forward hook to inject our pre-computed combined embeddings
-        into the UNet without monkey-patching.
-
-        Args:
-            sample: Input latents (B, 9, H, W)
-            emb: Combined embeddings (B, 1280)
-            encoder_hidden_states: Dummy cross-attention (not used)
-
-        Returns:
-            Output latents (B, 4, H, W)
-        """
-        # Store the embedding we want to inject
-        self._custom_emb = emb
-        hook_handle = None
-
-        try:
-            # Register a forward hook on time_embedding module
-            # This intercepts the output and replaces it with our custom embedding
-            def embedding_hook(module, input, output):
-                # Replace the time embedding output with our combined embedding
-                return self._custom_emb
-
-            hook_handle = self.unet.unet.time_embedding.register_forward_hook(embedding_hook)
-
-            # Forward pass with dummy timestep (will be overridden by hook)
-            dummy_timestep = torch.zeros(sample.shape[0], device=sample.device)
-
-            # SDXL requires added_cond_kwargs for additional embeddings
-            # We provide dummy values since we're using our own conditioning
-            batch_size = sample.shape[0]
-            added_cond_kwargs = {
-                "text_embeds": torch.zeros(batch_size, 1280, device=sample.device),
-                "time_ids": torch.zeros(batch_size, 6, device=sample.device),
-            }
-
-            output = self.unet(
-                sample=sample,
-                timestep=dummy_timestep,
-                encoder_hidden_states=encoder_hidden_states,
-                added_cond_kwargs=added_cond_kwargs,
-                return_dict=False,
-            )
-
-        finally:
-            # Clean up: remove hook and temporary variable
-            if hook_handle is not None:
-                hook_handle.remove()
-            if hasattr(self, '_custom_emb'):
-                delattr(self, '_custom_emb')
-
         return output
 
     def print_conditioning_flow(self):
