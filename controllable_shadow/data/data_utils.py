@@ -51,6 +51,7 @@ def create_dataloaders(
 
     elif dataset_type == "custom":
         # Custom dataset with train/val splits
+        print("now we are using custom dataset_type ")
         root_dir = kwargs.get('root_dir', './data')
 
         train_dataset = ShadowDataset(
