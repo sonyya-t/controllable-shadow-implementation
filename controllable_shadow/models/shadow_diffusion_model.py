@@ -144,9 +144,13 @@ class ShadowDiffusionModel(nn.Module):
         device = object_image.device
 
         # Encode target shadow to latent space (x_1, clean target)
+        # NOTE: VAE encoder applies scaling_factor (0.13025)
         x1 = self.vae_pipeline.encode_shadow(shadow_map_target)
 
         # Sample random noise (x_0, noise source)
+        # IMPORTANT: x0 must have same scale as x1 for proper interpolation
+        # SDXL VAE uses scaling_factor, so x0 should match that scale
+        # Standard practice: randn with std=1 matches SDXL's latent distribution
         x0 = torch.randn_like(x1)
 
         # Sample random timestep t ~ Uniform(0, 1)
@@ -181,6 +185,18 @@ class ShadowDiffusionModel(nn.Module):
 
         # Rectified flow loss: MSE between predicted and target velocity
         loss = torch.nn.functional.mse_loss(predicted_velocity, target_velocity)
+
+        # Debug: Check for NaN/Inf
+        if torch.isnan(loss) or torch.isinf(loss):
+            print("\n⚠️  NaN/Inf detected in loss computation!")
+            print(f"   x0 (noise) stats: mean={x0.mean():.4f}, std={x0.std():.4f}, min={x0.min():.4f}, max={x0.max():.4f}")
+            print(f"   x1 (target) stats: mean={x1.mean():.4f}, std={x1.std():.4f}, min={x1.min():.4f}, max={x1.min():.4f}")
+            print(f"   xt (interpolated) stats: mean={xt.mean():.4f}, std={xt.std():.4f}")
+            print(f"   object_latent stats: mean={object_latent.mean():.4f}, std={object_latent.std():.4f}")
+            print(f"   predicted_velocity stats: mean={predicted_velocity.mean():.4f}, std={predicted_velocity.std():.4f}")
+            print(f"   target_velocity stats: mean={target_velocity.mean():.4f}, std={target_velocity.std():.4f}")
+            print(f"   Has NaN in predicted: {torch.isnan(predicted_velocity).any()}")
+            print(f"   Has NaN in target: {torch.isnan(target_velocity).any()}")
 
         return {
             "loss": loss,
