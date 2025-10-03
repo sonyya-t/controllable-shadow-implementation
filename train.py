@@ -39,8 +39,8 @@ def parse_args():
                         help="Data directory (for custom dataset)")
     parser.add_argument("--cache_dir", type=str, default=None,
                         help="Cache directory for HuggingFace datasets")
-    parser.add_argument("--image_size", type=int, default=1024,
-                        help="Image size (1024 for paper, use 512 to save memory)")
+    parser.add_argument("--image_size", type=int, default=512,
+                        help="Image size (512 to fit in memory, 1024 for paper)")
 
     # Training (from paper)
     parser.add_argument("--batch_size", type=int, default=2,

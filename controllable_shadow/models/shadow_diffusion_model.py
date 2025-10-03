@@ -75,9 +75,6 @@ class ShadowDiffusionModel(nn.Module):
             latent_size=latent_size,
         )
 
-        # Convert UNet to FP16 (VAE stays FP32)
-        self.unet = self.unet.half()
-
         print("✓ Shadow Diffusion Model initialized")
 
     def forward(

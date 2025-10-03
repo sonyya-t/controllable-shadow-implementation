@@ -50,12 +50,12 @@ class SDXLUNetForShadows(nn.Module):
         self.conditioning_dim = conditioning_dim
         self.pretrained_model_name = pretrained_model_name
 
-        # Load base SDXL UNet in FP16 to save memory
+        # Load base SDXL UNet in FP32
         print(f"Loading SDXL UNet from {pretrained_model_name}...")
         self.unet = UNet2DConditionModel.from_pretrained(
             pretrained_model_name,
             subfolder="unet",
-            torch_dtype=torch.float16,  # FP16 to save memory
+            torch_dtype=torch.float32,
         )
 
         # Store original config
