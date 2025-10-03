@@ -202,8 +202,8 @@ class ConditionedSDXLUNet(nn.Module):
         """
         Forward pass through UNet with custom embeddings.
 
-        This bypasses the normal timestep processing and directly injects
-        our combined (timestep + light) embeddings.
+        Uses a forward hook to inject our pre-computed combined embeddings
+        into the UNet without monkey-patching.
 
         Args:
             sample: Input latents (B, 9, H, W)
@@ -213,39 +213,34 @@ class ConditionedSDXLUNet(nn.Module):
         Returns:
             Output latents (B, 4, H, W)
         """
-        # This is a simplified version - in practice, we'd need to carefully
-        # inject embeddings at each UNet block
-        # For now, we use the standard forward but with pre-computed embeddings
+        # Store the embedding we want to inject
+        self._custom_emb = emb
+        hook_handle = None
 
-        # The actual implementation depends on diffusers version
-        # We'll use a workaround: pass a dummy timestep and replace embeddings
+        try:
+            # Register a forward hook on time_embedding module
+            # This intercepts the output and replaces it with our custom embedding
+            def embedding_hook(module, input, output):
+                # Replace the time embedding output with our combined embedding
+                return self._custom_emb
 
-        # Store original time_embedding module
-        original_time_embedding = self.unet.unet.time_embedding
+            hook_handle = self.unet.unet.time_embedding.register_forward_hook(embedding_hook)
 
-        # Create a temporary module that returns our custom embeddings
-        class CustomEmbedding(nn.Module):
-            def __init__(self, emb):
-                super().__init__()
-                self.emb = emb
+            # Forward pass with dummy timestep (will be overridden by hook)
+            dummy_timestep = torch.zeros(sample.shape[0], device=sample.device)
+            output = self.unet(
+                sample=sample,
+                timestep=dummy_timestep,
+                encoder_hidden_states=encoder_hidden_states,
+                return_dict=False,
+            )
 
-            def forward(self, x):
-                return self.emb
-
-        # Temporarily replace time_embedding
-        self.unet.unet.time_embedding = CustomEmbedding(emb)
-
-        # Forward pass with dummy timestep
-        dummy_timestep = torch.zeros(sample.shape[0], device=sample.device)
-        output = self.unet(
-            sample=sample,
-            timestep=dummy_timestep,
-            encoder_hidden_states=encoder_hidden_states,
-            return_dict=False,
-        )
-
-        # Restore original time_embedding
-        self.unet.unet.time_embedding = original_time_embedding
+        finally:
+            # Clean up: remove hook and temporary variable
+            if hook_handle is not None:
+                hook_handle.remove()
+            if hasattr(self, '_custom_emb'):
+                delattr(self, '_custom_emb')
 
         return output
 

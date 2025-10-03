@@ -55,7 +55,7 @@ class SDXLUNetForShadows(nn.Module):
         self.unet = UNet2DConditionModel.from_pretrained(
             pretrained_model_name,
             subfolder="unet",
-            torch_dtype=torch.float16,
+            torch_dtype=torch.float32,
         )
 
         # Store original config
@@ -72,27 +72,37 @@ class SDXLUNetForShadows(nn.Module):
         Remove cross-attention blocks from UNet.
 
         Cross-attention was used for text conditioning in original SDXL.
-        We replace it with self-attention only since we use scalar parameter
-        conditioning injected via timestep embeddings.
+        We replace it with identity/no-op processors since we use scalar
+        parameter conditioning injected via timestep embeddings.
         """
-        print("Removing cross-attention blocks...")
+        print("Disabling cross-attention blocks...")
 
-        # Replace cross-attention with identity or self-attention
-        # This modifies the attention processors
+        # Create no-op processor for cross-attention
+        class NoOpAttnProcessor:
+            """No-op attention processor that returns input unchanged."""
+            def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, **kwargs):
+                # Simply return the hidden states without any attention
+                # This effectively removes cross-attention computation
+                return hidden_states
+
+        # Replace attention processors
         attn_procs = {}
-        for name, _ in self.unet.attn_processors.items():
+        cross_attn_count = 0
+        self_attn_count = 0
+
+        for name, processor in self.unet.attn_processors.items():
             if "attn2" in name:  # attn2 is cross-attention
-                # Replace with pass-through
+                # Replace with no-op to skip computation
+                attn_procs[name] = NoOpAttnProcessor()
+                cross_attn_count += 1
+            else:  # attn1 is self-attention (keep these)
                 attn_procs[name] = AttnProcessor()
-            else:
-                attn_procs[name] = AttnProcessor()
+                self_attn_count += 1
 
         self.unet.set_attn_processor(attn_procs)
 
-        # We keep the modules but they won't receive cross-attention inputs
-        # Alternative: physically remove the modules (more complex)
-
-        print("Cross-attention blocks removed/disabled.")
+        print(f"✓ Cross-attention disabled: {cross_attn_count} modules")
+        print(f"✓ Self-attention active: {self_attn_count} modules")
 
     def _modify_input_conv(self):
         """
@@ -259,7 +269,7 @@ class VAEWrapper(nn.Module):
         self.vae = AutoencoderKL.from_pretrained(
             pretrained_model_name,
             subfolder="vae",
-            torch_dtype=torch.float16,
+            torch_dtype=torch.float32,
         )
 
         # Freeze VAE weights

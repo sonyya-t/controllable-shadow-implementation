@@ -14,92 +14,77 @@ from PIL import Image
 import torchvision.transforms as T
 from pathlib import Path
 
-from .rectified_flow import RectifiedFlowModel  
-from .conditioning import LightParameterConditioning
+from .shadow_diffusion_model import ShadowDiffusionModel, create_shadow_model
 from ..utils.image_processor import ImageProcessor
 
 
 class ShadowGenerator:
     """
     Main class for controllable shadow generation.
-    
+
     This class integrates the diffusion model, conditioning, and blending
     pipeline to generate realistic shadows for object images.
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  model_path: Optional[str] = None,
                  device: str = "auto",
-                 use_vae_cache: bool = True):
+                 pretrained_model_name: str = "stabilityai/stable-diffusion-xl-base-1.0",
+                 conditioning_strategy: str = "additive",
+                 image_size: int = 1024):
         """
         Initialize shadow generator.
-        
+
         Args:
             model_path: Path to pretrained model weights
             device: Device to run on ("auto", "cpu", "cuda")
-            use_vae_cache: Whether to cache VAE embeddings
+            pretrained_model_name: HuggingFace SDXL model ID
+            conditioning_strategy: "additive" or "concat"
+            image_size: Image size (default: 1024)
         """
         self.device = self._get_device(device)
-        self.use_vae_cache = use_vae_cache
-        self._vae_cache = {}
-        
+        self.image_size = image_size
+        self.latent_size = (image_size // 8, image_size // 8)
+
         # Initialize components
         self.image_processor = ImageProcessor()
-        self.light_conditioning = LightParameterConditioning(256, 10000.0)
-        self.diffusion_model = self._create_model()
-        
-        # Load model if path provided
+
+        # Create the SDXL-based diffusion model
         if model_path:
-            self.load_model(model_path)
-            
-        # Move to device
-        self.to(self.device)
+            self.model = create_shadow_model(
+                pretrained_path=model_path,
+                device=str(self.device),
+                pretrained_model_name=pretrained_model_name,
+                conditioning_strategy=conditioning_strategy,
+                image_size=(image_size, image_size),
+                latent_size=self.latent_size,
+            )
+        else:
+            self.model = ShadowDiffusionModel(
+                pretrained_model_name=pretrained_model_name,
+                conditioning_strategy=conditioning_strategy,
+                image_size=(image_size, image_size),
+                latent_size=self.latent_size,
+            )
+            self.model = self.model.to(self.device)
+            self.model.freeze_vae()
         
     def _get_device(self, device: str) -> torch.device:
         """Get appropriate device."""
         if device == "auto":
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
         return torch.device(device)
-    
-    def _create_model(self) -> RectifiedFlowModel:
-        """Create the diffusion model."""
-        return RectifiedFlowModel(
-            in_channels=9,  # 4 (noise) + 4  (object) + 1 (mask)
-            out_channels=4,
-            conditioning_dim=768,  # 256 * 3 parameters
-            embed_dim=320,
-            num_res_blocks=2,
-            attention_resolutions=(4, 2, 1)
-        )
-    
+
     def to(self, device: torch.device):
         """Move model to device."""
         self.device = device
-        self.light_conditioning.to(device)
-        self.diffusion_model.to(device)
+        self.model = self.model.to(device)
         return self
-    
-    def load_model(self, model_path: str):
-        """Load pretrained model weights."""
-        checkpoint = torch.load(model_path, map_location=self.device)
-        self.diffusion_model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"Loaded model from {model_path}")
-        
-    def save_model(self, model_path: str):
-        """Save model weights."""
-        checkpoint = {
-            'model_state_dict': self.diffusion_model.state_dict(),
-            'light_conditioning_state_dict': self.light_conditioning.state_dict()
-        }
-        torch.save(checkpoint, model_path)
-        print(f"Saved model to {model_path}")
-        
+
     @classmethod
     def from_pretrained(cls, model_path: str, **kwargs) -> 'ShadowGenerator':
         """Create ShadowGenerator from pretrained weights."""
-        generator = cls(**kwargs)
-        generator.load_model(model_path)
-        return generator
+        return cls(model_path=model_path, **kwargs)
     
     def preprocess_object_image(self, image_path: str) -> Tuple[torch.Tensor, Dict]:
         """
@@ -136,79 +121,73 @@ class ShadowGenerator:
     
     def generate_shadow_map(self,
                           object_image: Union[str, torch.Tensor],
+                          mask: Optional[torch.Tensor] = None,
                           theta: float = 30.0,
-                          phi: float = 60.0, 
+                          phi: float = 60.0,
                           size: float = 4.0,
                           intensity: float = 1.0,
                           num_steps: int = 1) -> torch.Tensor:
         """
         Generate shadow map for given object image and light parameters.
-        
+
         Args:
-            object_image: Path to image or processed tensor
+            object_image: Path to image or processed tensor (B, 3, H, W) in [-1, 1]
+            mask: Optional binary mask (B, 1, H, W). If None, auto-generated.
             theta: Polar angle in degrees (vertical direction)
             phi: Azimuthal angle in degrees (horizontal direction)
             size: Light size parameter (softness control)
             intensity: Shadow intensity multiplier
             num_steps: Number of sampling steps (typically 1 for rectified flow)
-            
+
         Returns:
-            Generated shadow map as (1, H, W) tensor
+            Generated shadow map as (B, 1, H, W) tensor in [0, 1]
         """
-        self.diffusion_model.eval()
-        
+        self.model.eval()
+
         with torch.no_grad():
             # Preprocess input
             if isinstance(object_image, str):
                 obj_tensor, metadata = self.preprocess_object_image(object_image)
+                obj_tensor = obj_tensor.unsqueeze(0)  # Add batch dim
+                mask = metadata.get('mask')
+                if mask is not None:
+                    mask = T.ToTensor()(mask).unsqueeze(0)
             else:
                 obj_tensor = object_image
-                
-            obj_tensor = obj_tensor.unsqueeze(0).to(self.device)  # Add batch dim
-            
-            # Extract object mask (simplified)
-            mask = self.image_processor.create_mask(obj_tensor)
+
+            obj_tensor = obj_tensor.to(self.device)
+
+            # Generate mask if not provided
+            if mask is None:
+                mask = self.image_processor.create_mask(obj_tensor)
             mask = mask.to(self.device)
-            
-            # Prepare conditioning
-            theta_tensor = torch.tensor([theta], device=self.device)
-            phi_tensor = torch.tensor([phi], device=self.device)  
-            size_tensor = torch.tensor([size], device=self.device)
-            
-            conditioning = self.light_conditioning(theta_tensor, phi_tensor, size_tensor)
-            
-            # Cache VAE embeddings if enabled
-            if self.use_vae_cache:
-                cache_key = f"{hash(obj_tensor.cpu().data.tobytes())}"
-                if cache_key in self._vae_cache:
-                    obj_embeddings = self._vae_cache[cache_key]
-                else:
-                    obj_embeddings = self._encode_to_vae_space(obj_tensor)
-                    self._vae_cache[cache_key] = obj_embeddings
-            else:
-                obj_embeddings = self._encode_to_vae_space(obj_tensor)
-                
-            mask_embeddings = self._encode_mask_to_latent_space(mask)
-            
-            # Generate shadow map
-            shadow_shape = obj_embeddings.shape[1:]
-            shadow_map = self.diffusion_model.sample(
-                shape=shadow_shape,
-                conditioning=conditioning,
-                object_image=obj_embeddings,
-                object_mask=mask_embeddings,
-                num_steps=num_steps
+
+            # Ensure correct shapes
+            batch_size = obj_tensor.shape[0]
+            assert obj_tensor.shape[1] == 3, f"Expected 3 channels, got {obj_tensor.shape[1]}"
+            assert mask.shape[1] == 1, f"Expected 1 channel mask, got {mask.shape[1]}"
+
+            # Prepare conditioning tensors
+            theta_tensor = torch.tensor([theta] * batch_size, device=self.device, dtype=torch.float32)
+            phi_tensor = torch.tensor([phi] * batch_size, device=self.device, dtype=torch.float32)
+            size_tensor = torch.tensor([size] * batch_size, device=self.device, dtype=torch.float32)
+
+            # Generate shadow map using the SDXL-based model
+            shadow_map = self.model.sample(
+                object_image=obj_tensor,
+                mask=mask,
+                theta=theta_tensor,
+                phi=phi_tensor,
+                size=size_tensor,
+                num_steps=num_steps,
+                return_latent=False,
             )
-            
-            # Decode from VAE space to pixel space
-            shadow_map = self._decode_from_vae_space(shadow_map)
-            
-            # Apply intensity
-            shadow_map = shadow_map * intensity
-            
-            # Take first channel only (convert 3-channel to grayscale)
-            shadow_map = shadow_map[0:1]  # Keep only first channel
-            
+
+            # Apply intensity scaling
+            if intensity != 1.0:
+                shadow_map = shadow_map * intensity
+                shadow_map = torch.clamp(shadow_map, 0.0, 1.0)
+
         return shadow_map
     
     def blend_with_background(self,
@@ -344,18 +323,3 @@ class ShadowGenerator:
             return results, shadow_maps
         return results
     
-    def _encode_to_vae_space(self, image_tensor: torch.Tensor) -> torch.Tensor:
-        """Encode image to VAE latent space (simplified)."""
-        # In practice, this would use a proper VAE encoder
-        # For now, we'll use a simple downsampling
-        return F.avg_pool2d(image_tensor, kernel_size=8, stride=8)
-    
-    def _decode_from_vae_space(self, latent_tensor: torch.Tensor) -> torch.Tensor:
-        """Decode from VAE latent space to pixel space (simplified)."""
-        # In practice, this would use a proper VAE decoder
-        # For now, we'll use simple upsampling
-        return F.interpolate(latent_tensor, size=(1024, 1024), mode='bilinear', align_corners=False)
-    
-    def _encode_mask_to_latent_space(self, mask: torch.Tensor) -> torch.Tensor:
-        """Encode mask to latent space."""
-        return F.max_pool2d(mask, kernel_size=8, stride=8)

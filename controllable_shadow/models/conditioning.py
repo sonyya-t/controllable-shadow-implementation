@@ -50,6 +50,9 @@ class LightParameterConditioning(nn.Module):
 
         ω_i = 2^(-(i·(i-1))/(d/2·(d/2-1))) · log(max_freq)
 
+        Note: Using natural logarithm (ln) as is standard in positional encodings.
+        This creates a geometric progression of frequencies from high to low.
+
         Args:
             d: Embedding dimension (total)
 
@@ -69,7 +72,8 @@ class LightParameterConditioning(nn.Module):
         else:
             exponent = -numerator / denominator
 
-        # ω_i = 2^exponent · log(max_freq)
+        # ω_i = 2^exponent · ln(max_freq)
+        # Using natural log (ln) as is standard for positional encodings
         omega_i = (2.0 ** exponent) * math.log(self.max_freq)
 
         return omega_i
@@ -98,32 +102,46 @@ class LightParameterConditioning(nn.Module):
         
         return embeddings
     
-    def encode_light_params(self, theta: torch.Tensor, phi: torch.Tensor, 
+    def encode_light_params(self, theta: torch.Tensor, phi: torch.Tensor,
                            size: torch.Tensor) -> torch.Tensor:
         """
         Encode light parameters (θ, φ, s) into combined embedding.
-        
+
         Args:
-            theta: Polar angle in degrees (shape: ...)
-            phi: Azimuthal angle in degrees (shape: ...)
-            size: Light size/softness parameter (shape: ...)
-            
+            theta: Polar angle in degrees (expected range: [0°, 45°])
+            phi: Azimuthal angle in degrees (expected range: [0°, 360°])
+            size: Light size/softness parameter (expected range: [2, 8])
+
         Returns:
             Combined embeddings (shape: ..., embedding_dim * 3)
         """
-        # Normalize parameters
-        theta_norm = theta / 45.0  # Normalize to [0, 1] range (assuming max θ=45°)
-        phi_norm = phi / 360.0      # Normalize to [0, 1] range  
-        size_norm = (size - 2) / 6  # Normalize s to [0, 1] range (assuming s ∈ [2, 8])
-        
+        # Validate and clamp parameters to expected ranges
+        # Theta: [0°, 45°] - vertical shadow direction
+        theta_clamped = torch.clamp(theta, 0.0, 45.0)
+        if (theta != theta_clamped).any():
+            print(f"Warning: theta values clamped to [0, 45]. Original range: [{theta.min():.1f}, {theta.max():.1f}]")
+
+        # Phi: [0°, 360°] - horizontal shadow direction (wraps around)
+        phi_wrapped = phi % 360.0
+
+        # Size: [2, 8] - light source size (softness)
+        size_clamped = torch.clamp(size, 2.0, 8.0)
+        if (size != size_clamped).any():
+            print(f"Warning: size values clamped to [2, 8]. Original range: [{size.min():.1f}, {size.max():.1f}]")
+
+        # Normalize parameters to [0, 1] range
+        theta_norm = theta_clamped / 45.0
+        phi_norm = phi_wrapped / 360.0
+        size_norm = (size_clamped - 2.0) / 6.0  # (size - min) / (max - min)
+
         # Encode each parameter
         theta_emb = self.encode_scalar(theta_norm.unsqueeze(-1))
         phi_emb = self.encode_scalar(phi_norm.unsqueeze(-1))
         size_emb = self.encode_scalar(size_norm.unsqueeze(-1))
-        
+
         # Concatenate embeddings
         combined_emb = torch.cat([theta_emb, phi_emb, size_emb], dim=-1)
-        
+
         return combined_emb
     
     def forward(self, theta: torch.Tensor, phi: torch.Tensor,

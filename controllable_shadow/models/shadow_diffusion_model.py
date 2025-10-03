@@ -143,18 +143,19 @@ class ShadowDiffusionModel(nn.Module):
         batch_size = object_image.shape[0]
         device = object_image.device
 
-        # Encode target shadow to latent space (x_0)
-        x0 = self.vae_pipeline.encode_shadow(shadow_map_target)
+        # Encode target shadow to latent space (x_1, clean target)
+        x1 = self.vae_pipeline.encode_shadow(shadow_map_target)
 
-        # Sample random noise (x_1)
-        x1 = torch.randn_like(x0)
+        # Sample random noise (x_0, noise source)
+        x0 = torch.randn_like(x1)
 
         # Sample random timestep t ~ Uniform(0, 1)
         t = torch.rand(batch_size, device=device)
 
-        # Linear interpolation: x_t = (1-t)*x_0 + t*x_1
+        # Linear interpolation: x_t = t*x_1 + (1-t)*x_0
+        # Rectified flow goes from x_0 (noise) at t=0 to x_1 (clean) at t=1
         t_broadcast = t.view(batch_size, 1, 1, 1)
-        xt = (1 - t_broadcast) * x0 + t_broadcast * x1
+        xt = t_broadcast * x1 + (1 - t_broadcast) * x0
 
         # Prepare input: concatenate [xt, object_latent, mask]
         # We need to replace noise with xt in the pipeline
@@ -235,12 +236,13 @@ class ShadowDiffusionModel(nn.Module):
 
         if num_steps == 1:
             # Single-step sampling (fast inference)
-            # x_1 = x_0 + v_θ(x_0)
+            # Start at t=0 (pure noise x_0) and integrate to t=1 (clean x_1)
+            # Using rectified flow: x_1 = x_0 + ∫₀¹ v_θ(x_t) dt ≈ x_0 + v_θ(x_0)
             unet_input = self.vae_pipeline.concatenator.concatenate(
                 x, object_latent, mask_latent
             )
 
-            t = torch.zeros(batch_size, device=device)  # t=0
+            t = torch.zeros(batch_size, device=device)  # t=0 (start from noise)
             velocity = self.unet(
                 sample=unet_input,
                 timestep=t,
@@ -249,6 +251,7 @@ class ShadowDiffusionModel(nn.Module):
                 size=size,
             )
 
+            # Integrate over full trajectory [0,1] in one step
             x_final = x + velocity
 
         else:
