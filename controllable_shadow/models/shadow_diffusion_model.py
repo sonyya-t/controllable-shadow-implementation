@@ -151,17 +151,18 @@ class ShadowDiffusionModel(nn.Module):
         device = object_image.device
 
         # Encode target shadow to latent space (x_1, clean target)
-        # NOTE: VAE encoder applies scaling_factor (0.13025)
+        # NOTE: VAE encoder applies scaling_factor (0.13025) and converts to FP16
         x1 = self.vae_pipeline.encode_shadow(shadow_map_target)
 
-        # Sample random noise (x_0, noise source)
-        # IMPORTANT: x0 must have same scale as x1 for proper interpolation
-        # SDXL VAE uses scaling_factor, so x0 should match that scale
-        # Standard practice: randn with std=1 matches SDXL's latent distribution
-        x0 = torch.randn_like(x1)
+        # Get target dtype from UNet (FP16)
+        target_dtype = x1.dtype
 
-        # Sample random timestep t ~ Uniform(0, 1)
-        t = torch.rand(batch_size, device=device)
+        # Sample random noise (x_0, noise source)
+        # IMPORTANT: x0 must have same scale and dtype as x1 for proper interpolation
+        x0 = torch.randn_like(x1)  # Automatically matches dtype
+
+        # Sample random timestep t ~ Uniform(0, 1) with correct dtype
+        t = torch.rand(batch_size, device=device, dtype=target_dtype)
 
         # Linear interpolation: x_t = t*x_1 + (1-t)*x_0
         # Rectified flow goes from x_0 (noise) at t=0 to x_1 (clean) at t=1
@@ -171,9 +172,11 @@ class ShadowDiffusionModel(nn.Module):
         # Prepare input: concatenate [xt, object_latent, mask]
         # We need to replace noise with xt in the pipeline
         object_latent = self.vae_pipeline.encode_object(object_image)
+
+        # Resize mask to latent size with correct dtype
         mask_latent = self.vae_pipeline.mask_processor.resize_to_latent(
             mask, self.latent_size
-        )
+        ).to(target_dtype)
         unet_input = self.vae_pipeline.concatenator.concatenate(
             xt, object_latent, mask_latent
         )
@@ -248,14 +251,17 @@ class ShadowDiffusionModel(nn.Module):
         batch_size = object_image.shape[0]
         device = object_image.device
 
-        # Start from random noise
-        x = torch.randn(batch_size, 4, *self.latent_size, device=device)
+        # Get target dtype from UNet (FP16)
+        target_dtype = next(self.unet.parameters()).dtype
 
-        # Encode object and mask
+        # Start from random noise with correct dtype
+        x = torch.randn(batch_size, 4, *self.latent_size, device=device, dtype=target_dtype)
+
+        # Encode object and mask with correct dtype
         object_latent = self.vae_pipeline.encode_object(object_image)
         mask_latent = self.vae_pipeline.mask_processor.resize_to_latent(
             mask, self.latent_size
-        )
+        ).to(target_dtype)
 
         if num_steps == 1:
             # Single-step sampling (fast inference)
@@ -265,7 +271,7 @@ class ShadowDiffusionModel(nn.Module):
                 x, object_latent, mask_latent
             )
 
-            t = torch.zeros(batch_size, device=device)  # t=0 (start from noise)
+            t = torch.zeros(batch_size, device=device, dtype=target_dtype)  # t=0 (start from noise)
             velocity = self.unet(
                 sample=unet_input,
                 timestep=t,
@@ -283,7 +289,7 @@ class ShadowDiffusionModel(nn.Module):
 
             for step in range(num_steps):
                 t_current = step * dt
-                t = torch.full((batch_size,), t_current, device=device)
+                t = torch.full((batch_size,), t_current, device=device, dtype=target_dtype)
 
                 unet_input = self.vae_pipeline.concatenator.concatenate(
                     x, object_latent, mask_latent
