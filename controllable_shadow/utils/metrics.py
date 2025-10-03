@@ -8,7 +8,7 @@ for evaluating shadow prediction quality.
 import torch
 import torch.nn.functional as F
 import numpy as np
-from typing import Dict, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 from scipy import ndimage
 from skimage.metrics import structural_similarity as ssim
 
