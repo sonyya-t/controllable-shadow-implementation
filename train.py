@@ -57,6 +57,8 @@ def parse_args():
                         help="Gradient accumulation steps")
     parser.add_argument("--mixed_precision", action="store_true",
                         help="Use mixed precision training")
+    parser.add_argument("--gradient_checkpointing", action="store_true",
+                        help="Use gradient checkpointing (saves memory, slower)")
     parser.add_argument("--num_workers", type=int, default=4,
                         help="Number of dataloader workers")
 
@@ -134,6 +136,7 @@ class Trainer:
         print(f"Max iterations: {args.max_iterations}")
         print(f"Device: {self.device}")
         print(f"Mixed precision: {args.mixed_precision}")
+        print(f"Gradient checkpointing: {args.gradient_checkpointing}")
         print(f"Gradient accumulation: {args.gradient_accumulation}")
         print(f"{'='*70}\n")
 
@@ -146,12 +149,36 @@ class Trainer:
 
         model = model.to(self.device)
         model.freeze_vae()  # Ensure VAE is frozen
+
+        # Enable gradient checkpointing if requested
+        if self.args.gradient_checkpointing:
+            print("\n⚡ Enabling gradient checkpointing (saves memory, ~20% slower)")
+            self._enable_gradient_checkpointing(model)
+
         model.train()
 
         # Print model summary
         model.print_model_summary()
 
         return model
+
+    def _enable_gradient_checkpointing(self, model):
+        """Enable gradient checkpointing on UNet to save memory."""
+        try:
+            # Enable checkpointing on the SDXL UNet
+            if hasattr(model.unet, 'unet') and hasattr(model.unet.unet, 'unet'):
+                # Access the actual diffusers UNet
+                unet = model.unet.unet.unet
+                if hasattr(unet, 'enable_gradient_checkpointing'):
+                    unet.enable_gradient_checkpointing()
+                    print("✓ Gradient checkpointing enabled on SDXL UNet")
+                else:
+                    print("⚠ UNet doesn't support gradient_checkpointing method")
+            else:
+                print("⚠ Could not find UNet to enable checkpointing")
+        except Exception as e:
+            print(f"⚠ Failed to enable gradient checkpointing: {e}")
+            print("  Continuing without it...")
 
     def _create_dataloaders(self):
         """Create train and validation dataloaders."""
