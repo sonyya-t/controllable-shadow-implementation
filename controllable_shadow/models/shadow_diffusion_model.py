@@ -38,7 +38,7 @@ class ShadowDiffusionModel(nn.Module):
         pretrained_model_name: str = "stabilityai/stable-diffusion-xl-base-1.0",
         conditioning_strategy: str = "additive",
         embedding_dim: int = 256,
-        latent_size: Tuple[int, int] = (128, 128),
+        latent_size: Optional[Tuple[int, int]] = None,
         image_size: Tuple[int, int] = (1024, 1024),
         use_blob_conditioning: bool = False,
     ):
@@ -49,11 +49,15 @@ class ShadowDiffusionModel(nn.Module):
             pretrained_model_name: HuggingFace SDXL model ID
             conditioning_strategy: "additive" or "concat"
             embedding_dim: Embedding dimension per light parameter
-            latent_size: Latent space size
+            latent_size: Latent space size (auto-calculated from image_size if None)
             image_size: Output image size
             use_blob_conditioning: Use blob instead of embeddings (ablation)
         """
         super().__init__()
+
+        # Calculate latent size from image size (VAE downsamples by 8)
+        if latent_size is None:
+            latent_size = (image_size[0] // 8, image_size[1] // 8)
 
         self.latent_size = latent_size
         self.image_size = image_size
