@@ -268,7 +268,9 @@ class VAEPipeline(nn.Module):
         Returns:
             Latent (B, 4, H//8, W//8)
         """
-        return self.vae.encode(object_image)
+        # Disable autocast for VAE (must stay in FP32)
+        with torch.cuda.amp.autocast(enabled=False):
+            return self.vae.encode(object_image)
 
     def encode_shadow(self, shadow_map: torch.Tensor) -> torch.Tensor:
         """
@@ -298,8 +300,9 @@ class VAEPipeline(nn.Module):
         if torch.isnan(shadow_normalized).any() or torch.isinf(shadow_normalized).any():
             print(f"\n⚠️  NaN/Inf after normalization: mean={shadow_normalized.mean()}, min={shadow_normalized.min()}, max={shadow_normalized.max()}")
 
-        # Encode
-        latent = self.vae.encode(shadow_normalized)
+        # Encode with autocast disabled (VAE must stay in FP32)
+        with torch.cuda.amp.autocast(enabled=False):
+            latent = self.vae.encode(shadow_normalized)
 
         # Debug: Check VAE output
         if torch.isnan(latent).any() or torch.isinf(latent).any():
