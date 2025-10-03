@@ -280,14 +280,33 @@ class VAEPipeline(nn.Module):
         Returns:
             Latent (B, 4, H//8, W//8)
         """
+        # Debug: Check input
+        if torch.isnan(shadow_map).any() or torch.isinf(shadow_map).any():
+            print(f"\n⚠️  NaN/Inf in shadow_map INPUT: mean={shadow_map.mean()}, min={shadow_map.min()}, max={shadow_map.max()}")
+
         # Convert to RGB
         shadow_rgb = self.converter.grayscale_to_rgb(shadow_map)
+
+        # Debug: Check after RGB conversion
+        if torch.isnan(shadow_rgb).any() or torch.isinf(shadow_rgb).any():
+            print(f"\n⚠️  NaN/Inf after RGB conversion: mean={shadow_rgb.mean()}, min={shadow_rgb.min()}, max={shadow_rgb.max()}")
 
         # Normalize to [-1, 1]
         shadow_normalized = self.converter.normalize_shadow(shadow_rgb)
 
+        # Debug: Check after normalization
+        if torch.isnan(shadow_normalized).any() or torch.isinf(shadow_normalized).any():
+            print(f"\n⚠️  NaN/Inf after normalization: mean={shadow_normalized.mean()}, min={shadow_normalized.min()}, max={shadow_normalized.max()}")
+
         # Encode
-        return self.vae.encode(shadow_normalized)
+        latent = self.vae.encode(shadow_normalized)
+
+        # Debug: Check VAE output
+        if torch.isnan(latent).any() or torch.isinf(latent).any():
+            print(f"\n⚠️  NaN/Inf in VAE ENCODE OUTPUT: mean={latent.mean()}, min={latent.min()}, max={latent.max()}")
+            print(f"   Input to VAE was: mean={shadow_normalized.mean()}, std={shadow_normalized.std()}, dtype={shadow_normalized.dtype}")
+
+        return latent
 
     def decode_to_shadow(self, latent: torch.Tensor) -> torch.Tensor:
         """
