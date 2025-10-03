@@ -219,6 +219,11 @@ class ConditionedSDXLUNet(nn.Module):
             return_dict=False,
         )
 
+        # When return_dict=False, SDXL returns tuple (sample,)
+        # Extract the tensor
+        if isinstance(output, tuple):
+            output = output[0]
+
         if return_dict:
             return {"sample": output}
         return output
