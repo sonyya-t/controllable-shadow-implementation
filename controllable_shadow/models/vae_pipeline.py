@@ -293,15 +293,15 @@ class VAEPipeline(nn.Module):
         Returns:
             Latent (B, 4, H//8, W//8) in FP16
         """
-        # Convert to RGB
-        shadow_rgb = self.converter.grayscale_to_rgb(shadow_map)
-
-        # Normalize to [-1, 1] (VAE expects this range!)
-        shadow_normalized = self.converter.normalize_shadow(shadow_rgb)
-
-        # VAE must run in FP32, disable autocast if active
+        # VAE must run in FP32, disable autocast for entire preprocessing + encoding
         # Autocast context can convert inputs to FP16, which causes dtype mismatch
         with torch.amp.autocast('cuda', enabled=False):
+            # Convert to RGB (in FP32)
+            shadow_rgb = self.converter.grayscale_to_rgb(shadow_map)
+
+            # Normalize to [-1, 1] (VAE expects this range, in FP32!)
+            shadow_normalized = self.converter.normalize_shadow(shadow_rgb)
+
             # Ensure input is FP32
             if shadow_normalized.dtype != torch.float32:
                 shadow_normalized = shadow_normalized.float()

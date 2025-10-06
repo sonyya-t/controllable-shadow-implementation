@@ -136,6 +136,12 @@ class ConditionedSDXLUNet(nn.Module):
         # This returns projected light embeddings ready to be added to timestep
         light_emb = self.encode_light_parameters(theta, phi, size)  # (B, 1280)
 
+        print(f"\n[DEBUG] ConditionedUNet - Light parameters:")
+        print(f"  theta: {theta}, phi: {phi}, size: {size}")
+        print(f"  light_emb shape: {light_emb.shape}, dtype: {light_emb.dtype}")
+        print(f"  light_emb stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
+        print(f"  light_emb has NaN: {torch.isnan(light_emb).any()}")
+
         # 2. Validate embedding dimension
         expected_dim = 1280  # SDXL time embedding dimension
         if light_emb.shape[-1] != expected_dim:
@@ -172,6 +178,11 @@ class ConditionedSDXLUNet(nn.Module):
         if timestep.dtype != sample.dtype:
             timestep = timestep.to(sample.dtype)
 
+        print(f"\n[DEBUG] Before UNet forward:")
+        print(f"  sample stats: min={sample.min():.4f}, max={sample.max():.4f}, mean={sample.mean():.4f}")
+        print(f"  sample has NaN: {torch.isnan(sample).any()}")
+        print(f"  timestep: {timestep}")
+
         output = self.unet(
             sample=sample,
             timestep=timestep,
@@ -182,6 +193,14 @@ class ConditionedSDXLUNet(nn.Module):
 
         # When return_dict=False, SDXL returns tuple (sample,)
         # Extract the tensor
+
+        print(f"\n[DEBUG] After UNet forward:")
+        if isinstance(output, tuple):
+            result = output[0]
+        else:
+            result = output
+        print(f"  output stats: min={result.min():.4f}, max={result.max():.4f}, mean={result.mean():.4f}")
+        print(f"  output has NaN: {torch.isnan(result).any()}")
         if isinstance(output, tuple):
             output = output[0]
 

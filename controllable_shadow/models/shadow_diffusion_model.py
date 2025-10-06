@@ -151,6 +151,12 @@ class ShadowDiffusionModel(nn.Module):
         # VAE encoder returns FP16 (after internal FP32 processing)
         x1 = self.vae_pipeline.encode_shadow(shadow_map_target)  # Returns FP16
 
+        # DEBUG: Check VAE output
+        print(f"\n[DEBUG] After VAE encode_shadow:")
+        print(f"  x1 shape: {x1.shape}, dtype: {x1.dtype}")
+        print(f"  x1 stats: min={x1.min():.4f}, max={x1.max():.4f}, mean={x1.mean():.4f}")
+        print(f"  x1 has NaN: {torch.isnan(x1).any()}, has Inf: {torch.isinf(x1).any()}")
+
         # All training operations happen in FP16 for memory efficiency
         target_dtype = torch.float16
 
@@ -161,6 +167,9 @@ class ShadowDiffusionModel(nn.Module):
         # Sample random noise (x_0, noise source) in FP16
         x0 = torch.randn_like(x1)  # Matches x1 dtype (FP16)
 
+        print(f"\n[DEBUG] After noise sampling:")
+        print(f"  x0 stats: min={x0.min():.4f}, max={x0.max():.4f}, mean={x0.mean():.4f}")
+
         # Sample random timestep t ~ Uniform(0, 1) in FP16
         t = torch.rand(batch_size, device=device, dtype=target_dtype)
 
@@ -169,9 +178,18 @@ class ShadowDiffusionModel(nn.Module):
         t_broadcast = t.view(batch_size, 1, 1, 1)
         xt = t_broadcast * x1 + (1 - t_broadcast) * x0
 
+        print(f"\n[DEBUG] After interpolation:")
+        print(f"  t: {t[0]:.4f}")
+        print(f"  xt stats: min={xt.min():.4f}, max={xt.max():.4f}, mean={xt.mean():.4f}")
+        print(f"  xt has NaN: {torch.isnan(xt).any()}")
+
         # Prepare input: concatenate [xt, object_latent, mask]
         # VAE encode_object returns FP16
         object_latent = self.vae_pipeline.encode_object(object_image)  # Returns FP16
+
+        print(f"\n[DEBUG] After VAE encode_object:")
+        print(f"  object_latent stats: min={object_latent.min():.4f}, max={object_latent.max():.4f}, mean={object_latent.mean():.4f}")
+        print(f"  object_latent has NaN: {torch.isnan(object_latent).any()}")
 
         # Ensure object_latent is FP16
         if object_latent.dtype != target_dtype:
@@ -182,10 +200,18 @@ class ShadowDiffusionModel(nn.Module):
             mask, self.latent_size
         ).to(target_dtype)
 
+        print(f"\n[DEBUG] After mask resize:")
+        print(f"  mask_latent stats: min={mask_latent.min():.4f}, max={mask_latent.max():.4f}, mean={mask_latent.mean():.4f}")
+
         # Concatenate all in FP16: [xt(4) + object(4) + mask(1)] = 9 channels
         unet_input = self.vae_pipeline.concatenator.concatenate(
             xt, object_latent, mask_latent
         )
+
+        print(f"\n[DEBUG] After concatenation:")
+        print(f"  unet_input shape: {unet_input.shape}, dtype: {unet_input.dtype}")
+        print(f"  unet_input stats: min={unet_input.min():.4f}, max={unet_input.max():.4f}, mean={unet_input.mean():.4f}")
+        print(f"  unet_input has NaN: {torch.isnan(unet_input).any()}")
 
         # Predict velocity v_θ(x_t)
         predicted_velocity = self.unet(
