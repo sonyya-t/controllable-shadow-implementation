@@ -57,10 +57,10 @@ class LightParameterConditioning(nn.Module):
             d: Embedding dimension (total)
 
         Returns:
-            Frequency tensor of shape (d//2,)
+            Frequency tensor of shape (d//2,) in FP16
         """
         half_dim = d // 2
-        i = torch.arange(half_dim, dtype=torch.float32)
+        i = torch.arange(half_dim, dtype=torch.float16)
 
         # Compute exponent: -(i·(i-1)) / (d/2·(d/2-1))
         numerator = i * (i - 1)
@@ -81,25 +81,25 @@ class LightParameterConditioning(nn.Module):
     def encode_scalar(self, x: torch.Tensor) -> torch.Tensor:
         """
         Apply sinusoidal encoding to scalar parameter.
-        
+
         Args:
             x: Input scalar parameter(s) of shape (..., 1)
-            
+
         Returns:
-            Encoded embeddings of shape (..., embedding_dim)
+            Encoded embeddings of shape (..., embedding_dim) in FP16
         """
-        # Normalize input to [0, 1] range
-        x_norm = x.float()
-        
+        # Keep in FP16 throughout
+        x_norm = x.half() if x.dtype != torch.float16 else x
+
         # Compute sinusoidal frequencies
         angles = self.omega_i[None, :] * x_norm[..., None]  # (..., d//2)
-        
+
         # Create sinusoidal embeddings
         embeddings = torch.cat([
             torch.cos(angles),
             torch.sin(angles)
         ], dim=-1)
-        
+
         return embeddings
     
     def encode_light_params(self, theta: torch.Tensor, phi: torch.Tensor,

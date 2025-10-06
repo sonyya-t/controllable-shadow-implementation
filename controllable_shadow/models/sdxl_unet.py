@@ -285,25 +285,34 @@ class VAEWrapper(nn.Module):
     def __init__(
         self,
         pretrained_model_name: str = "stabilityai/stable-diffusion-xl-base-1.0",
+        use_fp16_vae: bool = True,
     ):
         """
         Initialize VAE wrapper.
 
         Args:
             pretrained_model_name: HuggingFace model ID for SDXL
+            use_fp16_vae: Use FP16-fixed VAE for full FP16 pipeline
         """
         super().__init__()
 
-        # CRITICAL TEST: Use FP32 VAE to isolate UNet FP16 issue
-        # Standard SDXL VAE in FP32 for maximum stability
-        print(f"Loading SDXL VAE from {pretrained_model_name} in FP32...")
-        self.vae = AutoencoderKL.from_pretrained(
-            pretrained_model_name,
-            subfolder="vae",
-            torch_dtype=torch.float32,
-        )
-
-        print("✓ VAE loaded in FP32 (for debugging UNet FP16 issue)")
+        if use_fp16_vae:
+            # Use FP16-compatible VAE (finetuned to avoid NaN in FP16)
+            print(f"Loading FP16-fixed SDXL VAE from madebyollin/sdxl-vae-fp16-fix...")
+            self.vae = AutoencoderKL.from_pretrained(
+                "madebyollin/sdxl-vae-fp16-fix",
+                torch_dtype=torch.float16,
+            )
+            print("✓ VAE loaded in FP16 (using fp16-fix variant)")
+        else:
+            # Fallback to FP32 VAE
+            print(f"Loading SDXL VAE from {pretrained_model_name} in FP32...")
+            self.vae = AutoencoderKL.from_pretrained(
+                pretrained_model_name,
+                subfolder="vae",
+                torch_dtype=torch.float32,
+            )
+            print("✓ VAE loaded in FP32")
 
         # Freeze VAE weights
         for param in self.vae.parameters():
@@ -312,7 +321,6 @@ class VAEWrapper(nn.Module):
         self.vae.eval()
 
         print("SDXL VAE loaded and frozen successfully!")
-        print("✓ All VAE parameters and buffers verified as FP16")
 
     @torch.no_grad()
     def encode(self, images: torch.Tensor) -> torch.Tensor:
@@ -323,22 +331,22 @@ class VAEWrapper(nn.Module):
             images: RGB images (B, 3, H, W) in range [-1, 1]
 
         Returns:
-            Latents (B, 4, H//8, W//8) in FP16
+            Latents (B, 4, H//8, W//8) matching VAE dtype
         """
         # Ensure VAE is in eval mode
         self.vae.eval()
 
-        # VAE is FP32, disable autocast and ensure input is FP32
-        with torch.amp.autocast('cuda', enabled=False):
-            if images.dtype != torch.float32:
-                images = images.float()
+        # Match input dtype to VAE dtype
+        vae_dtype = next(self.vae.parameters()).dtype
+        if images.dtype != vae_dtype:
+            images = images.to(vae_dtype)
 
-            # Encode in FP32
-            latent_dist = self.vae.encode(images).latent_dist
-            latents = latent_dist.sample()
+        # Encode
+        latent_dist = self.vae.encode(images).latent_dist
+        latents = latent_dist.sample()
 
-            # SDXL uses scaling factor
-            latents = latents * self.vae.config.scaling_factor
+        # SDXL uses scaling factor
+        latents = latents * self.vae.config.scaling_factor
 
         return latents
 
@@ -356,16 +364,16 @@ class VAEWrapper(nn.Module):
         # Ensure VAE is in eval mode
         self.vae.eval()
 
-        # VAE is FP32, disable autocast and ensure input is FP32
-        with torch.amp.autocast('cuda', enabled=False):
-            if latents.dtype != torch.float32:
-                latents = latents.float()
+        # Match input dtype to VAE dtype
+        vae_dtype = next(self.vae.parameters()).dtype
+        if latents.dtype != vae_dtype:
+            latents = latents.to(vae_dtype)
 
-            # Unscale latents
-            latents = latents / self.vae.config.scaling_factor
+        # Unscale latents
+        latents = latents / self.vae.config.scaling_factor
 
-            # Decode in FP32
-            images = self.vae.decode(latents).sample
+        # Decode
+        images = self.vae.decode(latents).sample
 
         return images
 

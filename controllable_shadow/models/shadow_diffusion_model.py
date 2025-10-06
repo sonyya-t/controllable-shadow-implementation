@@ -201,6 +201,7 @@ class ShadowDiffusionModel(nn.Module):
 
         # Rectified flow loss: MSE between predicted and target velocity
         # Compute in FP16, then convert to FP32 for numerical stability
+    
         loss_fp16 = torch.nn.functional.mse_loss(predicted_velocity, target_velocity, reduction='none')
         loss = loss_fp16.float().mean()  # Final loss in FP32 for stability
 

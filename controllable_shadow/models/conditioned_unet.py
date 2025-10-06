@@ -64,68 +64,24 @@ class ConditionedSDXLUNet(nn.Module):
         )
 
         # Project light embeddings to SDXL's time embedding dimension (1280)
-        # CRITICAL: Proper initialization to prevent gradient explosion
+        # CRITICAL: Keep in FP16 to match everything else, use small init to prevent explosion
         self.light_projection = nn.Linear(768, 1280)
-        
-        # Initialize with small weights to prevent gradient explosion
+
+        # Initialize with very small weights to prevent gradient explosion
         with torch.no_grad():
-            # Xavier uniform initialization with smaller scale
-            nn.init.xavier_uniform_(self.light_projection.weight, gain=0.1)
+            # Xavier uniform initialization with very small scale for FP16 stability
+            nn.init.xavier_uniform_(self.light_projection.weight, gain=0.01)
             if self.light_projection.bias is not None:
                 nn.init.zeros_(self.light_projection.bias)
 
-        # Wrap projection to force FP32 computation even under autocast
-        # This ensures both forward and backward are FP32, preventing gradient dtype mismatch
-        class FP32Linear(nn.Module):
-            def __init__(self, linear_layer):
-                super().__init__()
-                self.linear = linear_layer
-                self.reset_count = 0
-                self.max_resets = 10
-            
-            def forward(self, x):
-                # Check if weights are corrupted and reset if needed
-                if torch.isnan(self.linear.weight).any() or torch.isinf(self.linear.weight).any():
-                    if self.reset_count < self.max_resets:
-                        print(f"  [RESET] Projection weights corrupted! Resetting (attempt {self.reset_count + 1}/{self.max_resets})")
-                        self._reset_weights()
-                        self.reset_count += 1
-                    else:
-                        print(f"  [ERROR] Too many resets! Keeping corrupted weights.")
-                
-                # Disable autocast for this operation
-                with torch.amp.autocast('cuda', enabled=False):
-                    # Ensure input is FP32
-                    x_fp32 = x.float() if x.dtype != torch.float32 else x
-                    
-                    # Check for NaN/Inf in input
-                    if torch.isnan(x_fp32).any() or torch.isinf(x_fp32).any():
-                        print(f"  [ERROR] NaN/Inf detected in projection input! Replacing with zeros.")
-                        x_fp32 = torch.zeros_like(x_fp32)
-                    
-                    output = self.linear(x_fp32)
-                    
-                    # Check for NaN/Inf in output
-                    if torch.isnan(output).any() or torch.isinf(output).any():
-                        print(f"  [ERROR] NaN/Inf detected in projection output! Replacing with zeros.")
-                        output = torch.zeros_like(output)
-                    
-                    return output
-            
-            def _reset_weights(self):
-                """Reset weights to small random values"""
-                with torch.no_grad():
-                    nn.init.xavier_uniform_(self.linear.weight, gain=0.01)  # Even smaller gain
-                    if self.linear.bias is not None:
-                        nn.init.zeros_(self.linear.bias)
-
-        self.light_projection = FP32Linear(self.light_projection)
+        # Convert to FP16 to match UNet and training dtype
+        self.light_projection = self.light_projection.half()
 
         print(f"✓ Conditioned SDXL UNet initialized")
-        print(f"  - Light encoder: FP32 (numerically stable)")
-        print(f"  - Light projection: FP32 (forced, autocast disabled, small init, NaN protection)")
-        print(f"  - UNet: FP16 (memory efficient)")
-        print(f"  - Autocast: enabled for UNet only")
+        print(f"  - Light encoder: FP16")
+        print(f"  - Light projection: FP16 (small init gain=0.01)")
+        print(f"  - UNet: FP16")
+        print(f"  - Everything: FP16 (pure FP16 pipeline)")
 
     def encode_light_parameters(
         self,
@@ -144,23 +100,23 @@ class ConditionedSDXLUNet(nn.Module):
         Returns:
             Light embeddings projected to 1280-dim (B, 1280)
         """
-        # Encode to 768-dim (outputs FP32)
-        light_emb = self.light_encoder(theta, phi, size)  # (B, 768) FP32
+        # Encode to 768-dim (outputs FP16 now)
+        light_emb = self.light_encoder(theta, phi, size)  # (B, 768) FP16
 
         print(f"\n[DEBUG] encode_light_parameters:")
-        print(f"  After light_encoder: shape={light_emb.shape}, dtype={light_emb.dtype}")
+        print(f"  After light_encoder (FP16): shape={light_emb.shape}, dtype={light_emb.dtype}")
         print(f"  Stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
         print(f"  Has NaN: {torch.isnan(light_emb).any()}")
 
-        # Project in FP32 (FP32Linear wrapper disables autocast internally)
-        light_emb_projected = self.light_projection(light_emb)  # (B, 1280) FP32
+        # Project in FP16
+        light_emb_projected = self.light_projection(light_emb)  # (B, 1280) FP16
 
-        print(f"  After projection (FP32): shape={light_emb_projected.shape}, dtype={light_emb_projected.dtype}")
+        print(f"  After projection (FP16): shape={light_emb_projected.shape}, dtype={light_emb_projected.dtype}")
         print(f"  Stats: min={light_emb_projected.min():.4f}, max={light_emb_projected.max():.4f}, mean={light_emb_projected.mean():.4f}")
         print(f"  Has NaN: {torch.isnan(light_emb_projected).any()}")
 
         # Check projection weights for NaN
-        proj_weight = self.light_projection.linear.weight
+        proj_weight = self.light_projection.weight
         print(f"  Projection weights: dtype={proj_weight.dtype}, has NaN: {torch.isnan(proj_weight).any()}")
 
         return light_emb_projected
@@ -195,12 +151,8 @@ class ConditionedSDXLUNet(nn.Module):
         if timestep.dim() == 0:
             timestep = timestep.expand(batch_size)
 
-        # 1. Encode light parameters (θ, φ, s) → 1280-dim
-        # FP32Linear wrapper ensures this is computed in FP32 even under autocast
-        light_emb = self.encode_light_parameters(theta, phi, size)  # (B, 1280) FP32
-
-        # Keep in FP32 - let SDXL's add_embedding handle dtype conversion internally
-        # SDXL add_embedding expects text_embeds and will convert as needed
+        # 1. Encode light parameters (θ, φ, s) → 1280-dim in FP16
+        light_emb = self.encode_light_parameters(theta, phi, size)  # (B, 1280) FP16
 
         print(f"\n[DEBUG] ConditionedUNet - Light parameters:")
         print(f"  theta: {theta}, phi: {phi}, size: {size}")
@@ -225,15 +177,14 @@ class ConditionedSDXLUNet(nn.Module):
         # SDXL uses added_cond_kwargs to inject additional embeddings
         # SDXL's add_embedding: concat(text_embeds[1280], time_ids[6]) → Linear → 1280
         # Then: timestep_emb + add_emb
-        # We pass light embeddings as text_embeds (FP32), SDXL will handle conversion
+        # Everything in FP16 for consistency
         added_cond_kwargs = {
-            "text_embeds": light_emb,  # Light embeddings (B, 1280) in FP32
+            "text_embeds": light_emb,  # Light embeddings (B, 1280) in FP16
             # time_ids format: [h_orig, w_orig, crop_top, crop_left, h_target, w_target]
-            # Use image size (1024) for all to avoid NaN from zeros
-            # Keep time_ids in FP32 as well to match text_embeds
+            # Use image size (1024) for all to avoid NaN from zeros, in FP16
             "time_ids": torch.tensor([[1024, 1024, 0, 0, 1024, 1024]],
                                     device=sample.device,
-                                    dtype=torch.float32).repeat(batch_size, 1),
+                                    dtype=target_dtype).repeat(batch_size, 1),
         }
 
         # Forward through UNet
