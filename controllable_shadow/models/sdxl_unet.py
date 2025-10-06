@@ -328,16 +328,17 @@ class VAEWrapper(nn.Module):
         # Ensure VAE is in eval mode
         self.vae.eval()
 
-        # Ensure input is FP16 (VAE is now FP16)
-        if images.dtype != torch.float16:
-            images = images.half()
+        # VAE is FP32, disable autocast and ensure input is FP32
+        with torch.amp.autocast('cuda', enabled=False):
+            if images.dtype != torch.float32:
+                images = images.float()
 
-        # Encode directly in FP16
-        latent_dist = self.vae.encode(images).latent_dist
-        latents = latent_dist.sample()
+            # Encode in FP32
+            latent_dist = self.vae.encode(images).latent_dist
+            latents = latent_dist.sample()
 
-        # SDXL uses scaling factor
-        latents = latents * self.vae.config.scaling_factor
+            # SDXL uses scaling factor
+            latents = latents * self.vae.config.scaling_factor
 
         return latents
 
@@ -355,15 +356,16 @@ class VAEWrapper(nn.Module):
         # Ensure VAE is in eval mode
         self.vae.eval()
 
-        # Ensure input is FP16 (VAE is now FP16)
-        if latents.dtype != torch.float16:
-            latents = latents.half()
+        # VAE is FP32, disable autocast and ensure input is FP32
+        with torch.amp.autocast('cuda', enabled=False):
+            if latents.dtype != torch.float32:
+                latents = latents.float()
 
-        # Unscale latents
-        latents = latents / self.vae.config.scaling_factor
+            # Unscale latents
+            latents = latents / self.vae.config.scaling_factor
 
-        # Decode directly in FP16
-        images = self.vae.decode(latents).sample
+            # Decode in FP32
+            images = self.vae.decode(latents).sample
 
         return images
 
