@@ -61,6 +61,9 @@ def parse_args():
                         help="Use gradient checkpointing (saves memory, slower)")
     parser.add_argument("--cpu_offload", action="store_true",
                         help="Offload VAE to CPU (saves VRAM, slower)")
+    parser.add_argument("--quantize", type=str, default="4bit",
+                        choices=["8bit", "4bit"],
+                        help="Quantize model to 8bit or 4bit (requires bitsandbytes)")
     parser.add_argument("--num_workers", type=int, default=4,
                         help="Number of dataloader workers")
 
@@ -140,6 +143,7 @@ class Trainer:
         print(f"Mixed precision: {args.mixed_precision}")
         print(f"Gradient checkpointing: {args.gradient_checkpointing}")
         print(f"Gradient accumulation: {args.gradient_accumulation}")
+        print(f"Quantization: {args.quantize if args.quantize else 'None'}")
         print(f"{'='*70}\n")
 
     def _create_model(self) -> ShadowDiffusionModel:
@@ -149,7 +153,13 @@ class Trainer:
             image_size=(self.args.image_size, self.args.image_size),
         )
 
-        model = model.to(self.device)
+        # Apply quantization before moving to device if requested
+        if self.args.quantize:
+            print(f"\n🔧 Quantizing model to {self.args.quantize}...")
+            model = self._quantize_model(model)
+        else:
+            model = model.to(self.device)
+
         model.freeze_vae()  # Ensure VAE is frozen
 
         # Enable gradient checkpointing if requested
@@ -162,6 +172,53 @@ class Trainer:
         # Print model summary
         model.print_model_summary()
 
+        return model
+
+    def _quantize_model(self, model):
+        """Quantize model to 8bit or 4bit using bitsandbytes."""
+        try:
+            import bitsandbytes as bnb
+            from torch import nn
+        except ImportError:
+            raise ImportError("bitsandbytes is required for quantization. Install with: pip install bitsandbytes")
+
+        def replace_linear_with_quantized(module, quantize_type):
+            """Recursively replace Linear layers with quantized versions."""
+            for name, child in module.named_children():
+                if isinstance(child, nn.Linear):
+                    # Create quantized layer
+                    if quantize_type == "8bit":
+                        quantized_layer = bnb.nn.Linear8bitLt(
+                            child.in_features,
+                            child.out_features,
+                            bias=child.bias is not None,
+                            has_fp16_weights=False,
+                        )
+                    else:  # 4bit
+                        quantized_layer = bnb.nn.Linear4bit(
+                            child.in_features,
+                            child.out_features,
+                            bias=child.bias is not None,
+                        )
+
+                    # Copy weights and bias
+                    with torch.no_grad():
+                        quantized_layer.weight.data = child.weight.data
+                        if child.bias is not None:
+                            quantized_layer.bias.data = child.bias.data
+
+                    setattr(module, name, quantized_layer)
+                else:
+                    replace_linear_with_quantized(child, quantize_type)
+
+        # Quantize only the UNet (trainable part)
+        if hasattr(model, 'unet'):
+            print(f"  Quantizing UNet to {self.args.quantize}...")
+            replace_linear_with_quantized(model.unet, self.args.quantize)
+            print(f"✓ UNet quantized to {self.args.quantize}")
+
+        # Move to device after quantization
+        model = model.to(self.device)
         return model
 
     def _enable_gradient_checkpointing(self, model):
