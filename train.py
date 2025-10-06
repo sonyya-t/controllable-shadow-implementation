@@ -158,14 +158,14 @@ class Trainer:
         # Move to device
         model = model.to(self.device)
 
-        # Hybrid precision: UNet in FP16, VAE in FP32
-        # UNet: FP16 for speed and memory efficiency
-        # VAE: FP32 for numerical stability (GroupNorm, KL divergence sensitive)
-        # This is standard practice in Stable Diffusion
-        print("\n🔧 Hybrid precision training enabled")
+        # Pure FP16 training using FP16-fixed VAE
+        # UNet: FP16 (trainable, 50% memory savings)
+        # VAE: FP16 (using madebyollin/sdxl-vae-fp16-fix - community-trained for FP16)
+        # This achieves maximum memory efficiency
+        print("\n🔧 Pure FP16 training enabled")
         print("   ✓ UNet in FP16 (trainable)")
-        print("   ✓ VAE in FP32 (frozen, for stability)")
-        print("   ✓ Training operations in FP16, loss in FP32")
+        print("   ✓ VAE in FP16 (using FP16-fixed community model)")
+        print("   ✓ All operations in FP16, loss in FP32")
 
         # Ensure VAE is frozen
         model.freeze_vae()

@@ -294,17 +294,19 @@ class VAEWrapper(nn.Module):
         """
         super().__init__()
 
-        print(f"Loading SDXL VAE from {pretrained_model_name}...")
-        # VAE must stay in FP32 for numerical stability
-        # VAE has sensitive operations (GroupNorm, KL divergence) that overflow in FP16
-        # This is standard practice in Stable Diffusion (UNet FP16, VAE FP32)
+        # Option 1: FP16-fixed VAE (recommended for full FP16 pipeline)
+        # Use community-trained FP16-compatible VAE
+        vae_model_name = "madebyollin/sdxl-vae-fp16-fix"
+        print(f"Loading FP16-fixed VAE from {vae_model_name}...")
         self.vae = AutoencoderKL.from_pretrained(
-            pretrained_model_name,
-            subfolder="vae",
-            torch_dtype=torch.float32,  # Keep FP32 for stability
+            vae_model_name,
+            torch_dtype=torch.float16,
         )
 
-        print("✓ VAE loaded in FP32 for numerical stability")
+        # Force to FP16 (should already be, but ensure)
+        self.vae = self.vae.half()
+
+        print("✓ FP16-fixed VAE loaded (community-trained for FP16 stability)")
 
         # Freeze VAE weights
         for param in self.vae.parameters():

@@ -268,16 +268,13 @@ class VAEPipeline(nn.Module):
         Returns:
             Latent (B, 4, H//8, W//8) in FP16
         """
-        # VAE runs in FP32 for numerical stability
-        # Convert input to FP32 if needed
-        if object_image.dtype != torch.float32:
-            object_image = object_image.float()
+        # VAE runs in FP16 (using FP16-fixed VAE)
+        # Convert input to FP16 if needed
+        if object_image.dtype != torch.float16:
+            object_image = object_image.half()
 
-        # Encode in FP32
-        latent_fp32 = self.vae.encode(object_image)
-
-        # Convert to FP16 for training
-        latent = latent_fp32.half()
+        # Encode in FP16
+        latent = self.vae.encode(object_image)
 
         return latent
 
@@ -297,16 +294,13 @@ class VAEPipeline(nn.Module):
         # Normalize to [-1, 1] (VAE expects this range!)
         shadow_normalized = self.converter.normalize_shadow(shadow_rgb)
 
-        # VAE runs in FP32 for numerical stability
-        # Convert input to FP32 if needed
-        if shadow_normalized.dtype != torch.float32:
-            shadow_normalized = shadow_normalized.float()
+        # VAE runs in FP16 (using FP16-fixed VAE)
+        # Convert input to FP16 if needed
+        if shadow_normalized.dtype != torch.float16:
+            shadow_normalized = shadow_normalized.half()
 
-        # Encode in FP32
-        latent_fp32 = self.vae.encode(shadow_normalized)
-
-        # Convert to FP16 for training
-        latent = latent_fp32.half()
+        # Encode in FP16
+        latent = self.vae.encode(shadow_normalized)
 
         return latent
 
@@ -320,12 +314,12 @@ class VAEPipeline(nn.Module):
         Returns:
             Grayscale shadow (B, 1, H*8, W*8) in [0, 1]
         """
-        # VAE runs in FP32 for numerical stability
-        # Convert input to FP32 if needed
-        if latent.dtype != torch.float32:
-            latent = latent.float()
+        # VAE runs in FP16 (using FP16-fixed VAE)
+        # Convert input to FP16 if needed
+        if latent.dtype != torch.float16:
+            latent = latent.half()
 
-        # Decode in FP32
+        # Decode in FP16
         shadow_rgb = self.vae.decode(latent)
 
         # Convert to grayscale
