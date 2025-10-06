@@ -152,6 +152,15 @@ class Trainer:
         # Move to device
         model = model.to(self.device)
 
+        # Convert UNet to FP16 for mixed precision training
+        # VAE stays in FP32 (frozen)
+        if self.args.mixed_precision:
+            print("\n🔧 Converting UNet to FP16 for mixed precision training...")
+            # Only convert UNet, not VAE
+            model.unet = model.unet.half()
+            print("   ✓ UNet converted to FP16")
+            print("   ✓ VAE remains in FP32 (frozen)")
+
         # Ensure VAE is frozen
         model.freeze_vae()
 
@@ -254,7 +263,9 @@ class Trainer:
         phi = batch['phi'].to(self.device)
         size = batch['size'].to(self.device)
 
-        # Forward pass (UNet is FP16, VAE is FP32 - no autocast needed)
+        # Forward pass
+        # UNet is FP16, VAE is FP32 (handled internally by vae_pipeline.py)
+        # Mixed precision scaler handles gradients
         loss_dict = self.model.compute_rectified_flow_loss(
             object_image, mask, shadow_map, theta, phi, size
         )
