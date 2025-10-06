@@ -212,8 +212,8 @@ class Trainer:
     def _create_optimizer(self) -> optim.Optimizer:
         """Create AdamW optimizer as per paper."""
         # Use ultra-conservative learning rate for FP16 stability
-        conservative_lr = self.args.lr * 0.1  # 10x smaller
-        print(f"Using conservative learning rate: {conservative_lr} (10x smaller for FP16 stability)")
+        conservative_lr = self.args.lr * 0.01  # 100x smaller for pure FP16
+        print(f"Using ultra-conservative learning rate: {conservative_lr} (100x smaller for pure FP16)")
         
         optimizer = optim.AdamW(
             self.model.get_trainable_parameters(),
@@ -222,11 +222,7 @@ class Trainer:
             weight_decay=0.01,
         )
         
-        # Force FP16 optimizer states for FP16 parameters
-        # This prevents NaN issues when updating FP16 weights with FP32 optimizer states
-        self._force_fp16_optimizer_states(optimizer)
-        
-        print("✓ Optimizer created with FP16 states for FP16 parameters")
+        print("✓ Optimizer created (pure FP16 with conservative LR)")
         return optimizer
 
     def _create_scheduler(self):
@@ -238,45 +234,6 @@ class Trainer:
 
         return optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
 
-    def _force_fp16_optimizer_states(self, optimizer):
-        """Force FP16 optimizer states for FP16 parameters from the start."""
-        for param_group in optimizer.param_groups:
-            for param in param_group['params']:
-                if param.dtype == torch.float16:
-                    # Pre-create FP16 states to prevent FP32 creation
-                    if param not in optimizer.state:
-                        optimizer.state[param] = {}
-                    
-                    state = optimizer.state[param]
-                    
-                    # Create FP16 states if they don't exist
-                    if 'exp_avg' not in state:
-                        state['exp_avg'] = torch.zeros_like(param, dtype=torch.float16)
-                    else:
-                        state['exp_avg'] = state['exp_avg'].half()
-                    
-                    if 'exp_avg_sq' not in state:
-                        state['exp_avg_sq'] = torch.zeros_like(param, dtype=torch.float16)
-                    else:
-                        state['exp_avg_sq'] = state['exp_avg_sq'].half()
-                    
-                    # Ensure step counter is FP16 compatible
-                    if 'step' not in state:
-                        state['step'] = 0
-
-    def _ensure_optimizer_state_dtype(self):
-        """Ensure optimizer states match parameter dtypes to prevent NaN issues."""
-        for param_group in self.optimizer.param_groups:
-            for param in param_group['params']:
-                if param in self.optimizer.state:
-                    state = self.optimizer.state[param]
-                    param_dtype = param.dtype
-                    
-                    # Convert optimizer states to match parameter dtype
-                    if 'exp_avg' in state and state['exp_avg'].dtype != param_dtype:
-                        state['exp_avg'] = state['exp_avg'].to(dtype=param_dtype)
-                    if 'exp_avg_sq' in state and state['exp_avg_sq'].dtype != param_dtype:
-                        state['exp_avg_sq'] = state['exp_avg_sq'].to(dtype=param_dtype)
 
     def _save_config(self):
         """Save training configuration."""
@@ -379,9 +336,6 @@ class Trainer:
                 
                 # Optimizer step (pure FP16)
                 self.optimizer.step()
-
-                # Ensure optimizer states match parameter dtypes (prevent NaN)
-                self._ensure_optimizer_state_dtype()
 
                 # DEBUG: Check projection layer after optimizer step
                 for name, param in self.model.named_parameters():
