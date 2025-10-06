@@ -212,12 +212,26 @@ class Trainer:
 
     def _create_optimizer(self) -> optim.Optimizer:
         """Create AdamW optimizer as per paper."""
-        return optim.AdamW(
+        optimizer = optim.AdamW(
             self.model.get_trainable_parameters(),
             lr=self.args.lr,
             betas=(0.9, 0.999),
             weight_decay=0.01,
         )
+        
+        # Convert optimizer states to FP16 to match model weights
+        # This prevents NaN issues when updating FP16 weights with FP32 optimizer states
+        for param_group in optimizer.param_groups:
+            for param in param_group['params']:
+                if param.dtype == torch.float16 and param in optimizer.state:
+                    state = optimizer.state[param]
+                    if 'exp_avg' in state:
+                        state['exp_avg'] = state['exp_avg'].half()
+                    if 'exp_avg_sq' in state:
+                        state['exp_avg_sq'] = state['exp_avg_sq'].half()
+        
+        print("✓ Optimizer created with FP16 states for FP16 parameters")
+        return optimizer
 
     def _create_scheduler(self):
         """Create learning rate scheduler with warmup."""
@@ -227,6 +241,20 @@ class Trainer:
             return 1.0
 
         return optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
+
+    def _ensure_optimizer_state_dtype(self):
+        """Ensure optimizer states match parameter dtypes to prevent NaN issues."""
+        for param_group in self.optimizer.param_groups:
+            for param in param_group['params']:
+                if param in self.optimizer.state:
+                    state = self.optimizer.state[param]
+                    param_dtype = param.dtype
+                    
+                    # Convert optimizer states to match parameter dtype
+                    if 'exp_avg' in state and state['exp_avg'].dtype != param_dtype:
+                        state['exp_avg'] = state['exp_avg'].to(dtype=param_dtype)
+                    if 'exp_avg_sq' in state and state['exp_avg_sq'].dtype != param_dtype:
+                        state['exp_avg_sq'] = state['exp_avg_sq'].to(dtype=param_dtype)
 
     def _save_config(self):
         """Save training configuration."""
@@ -335,6 +363,9 @@ class Trainer:
                     # Optimizer step with scaler
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
+                    
+                    # Ensure optimizer states match parameter dtypes (prevent NaN)
+                    self._ensure_optimizer_state_dtype()
                 else:
                     # Special clipping for light projection layer (prevent NaN)
                     light_proj_params = [p for name, p in self.model.named_parameters()
@@ -348,6 +379,9 @@ class Trainer:
                         max_norm=1.0
                     )
                     self.optimizer.step()
+
+                # Ensure optimizer states match parameter dtypes (prevent NaN)
+                self._ensure_optimizer_state_dtype()
 
                 # DEBUG: Check projection layer after optimizer step
                 for name, param in self.model.named_parameters():
