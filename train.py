@@ -121,10 +121,10 @@ class Trainer:
         self.mem_profiler = MemoryProfiler()
         self.perf_profiler = PerformanceProfiler()
 
-        # Use autocast to prevent NaN in sensitive operations
-        # Even though weights are FP16, autocast keeps operations like
-        # softmax, layer_norm in FP32 for numerical stability
-        self.scaler = torch.amp.GradScaler('cuda')
+        # Use autocast for forward pass to keep sensitive ops in FP32
+        # Weights are FP16 but operations are selectively FP16/FP32
+        # No GradScaler needed - gradients are FP16 (matching weight dtype)
+        self.scaler = None
         self.use_amp = True  # Enable autocast for forward pass
 
         # Resume if specified
