@@ -171,6 +171,9 @@ class SDXLUNetForShadows(nn.Module):
             if original_bias is not None:
                 new_conv.bias.data = original_bias
 
+        # CRITICAL: Convert new conv layer to FP16 to match rest of UNet
+        new_conv = new_conv.half()
+
         # Replace the conv_in layer
         self.unet.conv_in = new_conv
 

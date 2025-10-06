@@ -158,13 +158,13 @@ class Trainer:
         # Move to device
         model = model.to(self.device)
 
-        # For mixed precision, we'll use autocast during forward pass
-        # Don't convert weights to FP16 - let autocast handle it dynamically
-        # This prevents numerical instability in sensitive operations
-        print("\n🔧 Mixed precision training enabled")
-        print("   ✓ Using autocast for dynamic FP16/FP32 selection")
-        print("   ✓ UNet stays in FP32, operations run in FP16 where safe")
-        print("   ✓ VAE remains in FP32 (frozen)")
+        # Pure FP16 training - everything loaded in FP16 from start
+        # UNet and VAE both in FP16 for maximum memory efficiency
+        # No autocast needed - direct FP16 operations throughout
+        print("\n🔧 Pure FP16 training enabled")
+        print("   ✓ UNet loaded in FP16")
+        print("   ✓ VAE loaded in FP16 (frozen)")
+        print("   ✓ All operations in FP16 (loss computation converts to FP32 for stability)")
 
         # Ensure VAE is frozen
         model.freeze_vae()
