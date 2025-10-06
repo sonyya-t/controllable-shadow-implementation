@@ -64,17 +64,16 @@ class ConditionedSDXLUNet(nn.Module):
         )
 
         # Project light embeddings to SDXL's time embedding dimension (1280)
-        # SDXL will add this to its own computed timestep embeddings
-        # CRITICAL: Keep projection in FP32 to avoid NaN from FP16 gradients
-        # Light encoder outputs FP32, projection processes in FP32, then converts to FP16
+        # CRITICAL: Projection must be FP16 to match UNet and avoid gradient dtype mismatch
+        # Light encoder outputs FP32, we convert to FP16 before projection
         self.light_projection = nn.Linear(768, 1280)
 
-        # Keep projection in FP32 for numerical stability
-        self.light_projection = self.light_projection.float()
+        # Convert projection to FP16 to match UNet (avoids FP32 weight + FP16 gradient corruption)
+        self.light_projection = self.light_projection.half()
 
         print(f"✓ Conditioned SDXL UNet initialized")
         print(f"  - Light encoder: FP32 (numerically stable)")
-        print(f"  - Light projection: FP32 (avoids FP16 gradient corruption)")
+        print(f"  - Light projection: FP16 (matches UNet dtype, avoids gradient corruption)")
         print(f"  - UNet: FP16 (memory efficient)")
 
     def encode_light_parameters(
@@ -102,17 +101,18 @@ class ConditionedSDXLUNet(nn.Module):
         print(f"  Stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
         print(f"  Has NaN: {torch.isnan(light_emb).any()}")
 
-        # Project in FP32 (projection layer is FP32)
-        light_emb_projected = self.light_projection(light_emb)  # (B, 1280) FP32
+        # Convert to FP16 before projection (projection layer is FP16)
+        light_emb = light_emb.half()  # (B, 768) FP16
+
+        print(f"  After .half(): shape={light_emb.shape}, dtype={light_emb.dtype}")
+        print(f"  Stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
+        print(f"  Has NaN: {torch.isnan(light_emb).any()}")
+
+        # Project in FP16 (projection layer is FP16)
+        light_emb_projected = self.light_projection(light_emb)  # (B, 1280) FP16
 
         print(f"  After projection: shape={light_emb_projected.shape}, dtype={light_emb_projected.dtype}")
         print(f"  Stats: min={light_emb_projected.min():.4f}, max={light_emb_projected.max():.4f}, mean={light_emb_projected.mean():.4f}")
-        print(f"  Has NaN: {torch.isnan(light_emb_projected).any()}")
-
-        # Convert to FP16 for UNet
-        light_emb_projected = light_emb_projected.half()  # (B, 1280) FP16
-
-        print(f"  After .half(): dtype={light_emb_projected.dtype}")
         print(f"  Has NaN: {torch.isnan(light_emb_projected).any()}")
 
         return light_emb_projected
