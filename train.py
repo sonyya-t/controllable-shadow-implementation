@@ -121,14 +121,11 @@ class Trainer:
         self.mem_profiler = MemoryProfiler()
         self.perf_profiler = PerformanceProfiler()
 
-        # Mixed precision with autocast + GradScaler
-        # Use GradScaler to prevent gradient underflow in FP16 operations
-        if args.mixed_precision:
-            self.scaler = torch.amp.GradScaler('cuda')
-            self.use_amp = True
-        else:
-            self.scaler = None
-            self.use_amp = False
+        # CRITICAL: UNet FP16 requires GradScaler even without autocast
+        # Because UNet weights are FP16, we need scaling for gradient stability
+        # This is different from autocast (which keeps weights FP32)
+        self.scaler = torch.amp.GradScaler('cuda')
+        self.use_amp = False  # No autocast - weights already FP16
 
         # Resume if specified
         if args.resume_from:

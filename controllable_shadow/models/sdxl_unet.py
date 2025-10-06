@@ -294,19 +294,16 @@ class VAEWrapper(nn.Module):
         """
         super().__init__()
 
-        # Option 1: FP16-fixed VAE (recommended for full FP16 pipeline)
-        # Use community-trained FP16-compatible VAE
-        vae_model_name = "madebyollin/sdxl-vae-fp16-fix"
-        print(f"Loading FP16-fixed VAE from {vae_model_name}...")
+        # CRITICAL TEST: Use FP32 VAE to isolate UNet FP16 issue
+        # Standard SDXL VAE in FP32 for maximum stability
+        print(f"Loading SDXL VAE from {pretrained_model_name} in FP32...")
         self.vae = AutoencoderKL.from_pretrained(
-            vae_model_name,
-            torch_dtype=torch.float16,
+            pretrained_model_name,
+            subfolder="vae",
+            torch_dtype=torch.float32,
         )
 
-        # Force to FP16 (should already be, but ensure)
-        self.vae = self.vae.half()
-
-        print("✓ FP16-fixed VAE loaded (community-trained for FP16 stability)")
+        print("✓ VAE loaded in FP32 (for debugging UNet FP16 issue)")
 
         # Freeze VAE weights
         for param in self.vae.parameters():
