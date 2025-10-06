@@ -97,11 +97,23 @@ class ConditionedSDXLUNet(nn.Module):
         # Encode to 768-dim (outputs FP32)
         light_emb = self.light_encoder(theta, phi, size)  # (B, 768) FP32
 
+        print(f"\n[DEBUG] encode_light_parameters:")
+        print(f"  After light_encoder: shape={light_emb.shape}, dtype={light_emb.dtype}")
+        print(f"  Stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
+        print(f"  Has NaN: {torch.isnan(light_emb).any()}")
+
         # Project in FP32 (projection layer is FP32)
         light_emb_projected = self.light_projection(light_emb)  # (B, 1280) FP32
 
+        print(f"  After projection: shape={light_emb_projected.shape}, dtype={light_emb_projected.dtype}")
+        print(f"  Stats: min={light_emb_projected.min():.4f}, max={light_emb_projected.max():.4f}, mean={light_emb_projected.mean():.4f}")
+        print(f"  Has NaN: {torch.isnan(light_emb_projected).any()}")
+
         # Convert to FP16 for UNet
         light_emb_projected = light_emb_projected.half()  # (B, 1280) FP16
+
+        print(f"  After .half(): dtype={light_emb_projected.dtype}")
+        print(f"  Has NaN: {torch.isnan(light_emb_projected).any()}")
 
         return light_emb_projected
 
@@ -138,6 +150,16 @@ class ConditionedSDXLUNet(nn.Module):
         # 1. Encode light parameters (θ, φ, s) → 1280-dim
         # This returns projected light embeddings ready to be added to timestep
         light_emb = self.encode_light_parameters(theta, phi, size)  # (B, 1280)
+
+        print(f"\n[DEBUG] ConditionedUNet - Light parameters:")
+        print(f"  theta: {theta}, phi: {phi}, size: {size}")
+        print(f"  light_emb shape: {light_emb.shape}, dtype: {light_emb.dtype}")
+        print(f"  light_emb stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
+        print(f"  light_emb has NaN: {torch.isnan(light_emb).any()}")
+
+        # Debug projection layer weights
+        proj_weight = self.light_projection.weight
+        print(f"  light_projection.weight: dtype={proj_weight.dtype}, has NaN: {torch.isnan(proj_weight).any()}")
 
         # 2. Validate embedding dimension
         expected_dim = 1280  # SDXL time embedding dimension
