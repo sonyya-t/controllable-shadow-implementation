@@ -122,10 +122,9 @@ class Trainer:
         self.perf_profiler = PerformanceProfiler()
 
         # Use autocast for forward pass to keep sensitive ops in FP32
-        # Weights are FP16 but operations are selectively FP16/FP32
-        # No GradScaler needed - gradients are FP16 (matching weight dtype)
+        # Pure FP16 training - no mixed precision
         self.scaler = None
-        self.use_amp = True  # Enable autocast for forward pass
+        self.use_amp = False  # Disable autocast completely
 
         # Resume if specified
         if args.resume_from:
@@ -140,7 +139,7 @@ class Trainer:
         print(f"Learning rate: {args.lr}")
         print(f"Max iterations: {args.max_iterations}")
         print(f"Device: {self.device}")
-        print(f"Mixed precision: {args.mixed_precision}")
+        print(f"Mixed precision: False (Pure FP16)")
         print(f"Gradient checkpointing: {args.gradient_checkpointing}")
         print(f"Gradient accumulation: {args.gradient_accumulation}")
         print(f"{'='*70}\n")
@@ -212,23 +211,20 @@ class Trainer:
 
     def _create_optimizer(self) -> optim.Optimizer:
         """Create AdamW optimizer as per paper."""
+        # Use ultra-conservative learning rate for FP16 stability
+        conservative_lr = self.args.lr * 0.1  # 10x smaller
+        print(f"Using conservative learning rate: {conservative_lr} (10x smaller for FP16 stability)")
+        
         optimizer = optim.AdamW(
             self.model.get_trainable_parameters(),
-            lr=self.args.lr,
+            lr=conservative_lr,
             betas=(0.9, 0.999),
             weight_decay=0.01,
         )
         
-        # Convert optimizer states to FP16 to match model weights
+        # Force FP16 optimizer states for FP16 parameters
         # This prevents NaN issues when updating FP16 weights with FP32 optimizer states
-        for param_group in optimizer.param_groups:
-            for param in param_group['params']:
-                if param.dtype == torch.float16 and param in optimizer.state:
-                    state = optimizer.state[param]
-                    if 'exp_avg' in state:
-                        state['exp_avg'] = state['exp_avg'].half()
-                    if 'exp_avg_sq' in state:
-                        state['exp_avg_sq'] = state['exp_avg_sq'].half()
+        self._force_fp16_optimizer_states(optimizer)
         
         print("✓ Optimizer created with FP16 states for FP16 parameters")
         return optimizer
@@ -241,6 +237,32 @@ class Trainer:
             return 1.0
 
         return optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
+
+    def _force_fp16_optimizer_states(self, optimizer):
+        """Force FP16 optimizer states for FP16 parameters from the start."""
+        for param_group in optimizer.param_groups:
+            for param in param_group['params']:
+                if param.dtype == torch.float16:
+                    # Pre-create FP16 states to prevent FP32 creation
+                    if param not in optimizer.state:
+                        optimizer.state[param] = {}
+                    
+                    state = optimizer.state[param]
+                    
+                    # Create FP16 states if they don't exist
+                    if 'exp_avg' not in state:
+                        state['exp_avg'] = torch.zeros_like(param, dtype=torch.float16)
+                    else:
+                        state['exp_avg'] = state['exp_avg'].half()
+                    
+                    if 'exp_avg_sq' not in state:
+                        state['exp_avg_sq'] = torch.zeros_like(param, dtype=torch.float16)
+                    else:
+                        state['exp_avg_sq'] = state['exp_avg_sq'].half()
+                    
+                    # Ensure step counter is FP16 compatible
+                    if 'step' not in state:
+                        state['step'] = 0
 
     def _ensure_optimizer_state_dtype(self):
         """Ensure optimizer states match parameter dtypes to prevent NaN issues."""
@@ -311,10 +333,8 @@ class Trainer:
         loss = loss_dict['loss'] / self.args.gradient_accumulation
 
         # Backward pass with gradient scaling
-        if self.scaler is not None:
-            self.scaler.scale(loss).backward()
-        else:
-            loss.backward()
+        # Backward pass (pure FP16)
+        loss.backward()
 
         return {'loss': loss_dict['loss'].item()}
 
@@ -344,41 +364,21 @@ class Trainer:
                             print(f"    [ERROR] Gradient has NaN/Inf! Zeroing.")
                             param.grad.zero_()
 
-                # Gradient clipping with scaler support
-                if self.scaler is not None:
-                    # Unscale before clipping
-                    self.scaler.unscale_(self.optimizer)
+                # Pure FP16 gradient clipping (no scaler)
+                # Special clipping for light projection layer (prevent NaN)
+                light_proj_params = [p for name, p in self.model.named_parameters()
+                                   if 'light_projection' in name]
+                if light_proj_params:
+                    torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)
 
-                    # Special clipping for light projection layer (prevent NaN)
-                    light_proj_params = [p for name, p in self.model.named_parameters()
-                                       if 'light_projection' in name]
-                    if light_proj_params:
-                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)
-
-                    # General gradient clipping
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.get_trainable_parameters(),
-                        max_norm=1.0
-                    )
-                    # Optimizer step with scaler
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                    
-                    # Ensure optimizer states match parameter dtypes (prevent NaN)
-                    self._ensure_optimizer_state_dtype()
-                else:
-                    # Special clipping for light projection layer (prevent NaN)
-                    light_proj_params = [p for name, p in self.model.named_parameters()
-                                       if 'light_projection' in name]
-                    if light_proj_params:
-                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)
-
-                    # General gradient clipping
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.get_trainable_parameters(),
-                        max_norm=1.0
-                    )
-                    self.optimizer.step()
+                # General gradient clipping
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.get_trainable_parameters(),
+                    max_norm=1.0
+                )
+                
+                # Optimizer step (pure FP16)
+                self.optimizer.step()
 
                 # Ensure optimizer states match parameter dtypes (prevent NaN)
                 self._ensure_optimizer_state_dtype()
