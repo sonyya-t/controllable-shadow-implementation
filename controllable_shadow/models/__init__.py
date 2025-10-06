@@ -25,7 +25,6 @@ from .conditioning import (
 
 # Legacy/existing implementations
 from .shadow_generator import ShadowGenerator
-from .rectified_flow import RectifiedFlowModel
 
 __all__ = [
     # NEW: Main model (recommended)
@@ -51,5 +50,4 @@ __all__ = [
 
     # Legacy
     "ShadowGenerator",
-    "RectifiedFlowModel",
 ]
