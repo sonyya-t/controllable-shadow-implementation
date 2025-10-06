@@ -121,11 +121,11 @@ class Trainer:
         self.mem_profiler = MemoryProfiler()
         self.perf_profiler = PerformanceProfiler()
 
-        # CRITICAL: UNet FP16 requires GradScaler even without autocast
-        # Because UNet weights are FP16, we need scaling for gradient stability
-        # This is different from autocast (which keeps weights FP32)
+        # Use autocast to prevent NaN in sensitive operations
+        # Even though weights are FP16, autocast keeps operations like
+        # softmax, layer_norm in FP32 for numerical stability
         self.scaler = torch.amp.GradScaler('cuda')
-        self.use_amp = False  # No autocast - weights already FP16
+        self.use_amp = True  # Enable autocast for forward pass
 
         # Resume if specified
         if args.resume_from:
@@ -155,14 +155,16 @@ class Trainer:
         # Move to device
         model = model.to(self.device)
 
-        # Pure FP16 training using FP16-fixed VAE
-        # UNet: FP16 (trainable, 50% memory savings)
-        # VAE: FP16 (using madebyollin/sdxl-vae-fp16-fix - community-trained for FP16)
-        # This achieves maximum memory efficiency
-        print("\n🔧 Pure FP16 training enabled")
-        print("   ✓ UNet in FP16 (trainable)")
-        print("   ✓ VAE in FP16 (using FP16-fixed community model)")
-        print("   ✓ All operations in FP16, loss in FP32")
+        # Hybrid precision with autocast
+        # UNet weights: FP16 (memory efficient)
+        # UNet operations: Autocast (FP16 for matmul/conv, FP32 for softmax/norm)
+        # VAE: FP32 (numerically stable, autocast disabled)
+        # This balances speed, memory, and stability
+        print("\n🔧 Hybrid precision training with autocast")
+        print("   ✓ UNet weights in FP16")
+        print("   ✓ UNet ops use autocast (selective FP16/FP32)")
+        print("   ✓ VAE in FP32 (autocast disabled)")
+        print("   ✓ GradScaler enabled for stability")
 
         # Ensure VAE is frozen
         model.freeze_vae()
