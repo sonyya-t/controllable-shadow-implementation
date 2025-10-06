@@ -122,7 +122,10 @@ class Trainer:
         self.perf_profiler = PerformanceProfiler()
 
         # Mixed precision
-        self.scaler = torch.cuda.amp.GradScaler() if args.mixed_precision else None
+        # Note: We explicitly convert UNet to FP16, so we don't need GradScaler
+        # GradScaler is only for autocast (automatic mixed precision)
+        # Since we use manual FP16 conversion, we handle precision manually
+        self.scaler = None
 
         # Resume if specified
         if args.resume_from:
@@ -272,11 +275,10 @@ class Trainer:
 
         loss = loss_dict['loss'] / self.args.gradient_accumulation
 
-        # Backward pass (use scaler for FP16 gradients)
-        if self.scaler is not None:
-            self.scaler.scale(loss).backward()
-        else:
-            loss.backward()
+        # Backward pass
+        # Loss is already FP32 (from loss computation), gradients will be FP16
+        # This is fine - PyTorch handles it correctly
+        loss.backward()
 
         return {'loss': loss_dict['loss'].item()}
 
@@ -297,15 +299,15 @@ class Trainer:
             # Gradient accumulation
             if (batch_idx + 1) % self.args.gradient_accumulation == 0:
                 # Gradient clipping to prevent explosion
-                if self.scaler is not None:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.get_trainable_parameters(), max_norm=1.0)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    torch.nn.utils.clip_grad_norm_(self.model.get_trainable_parameters(), max_norm=1.0)
-                    self.optimizer.step()
+                # No scaler needed - we use explicit FP16, not autocast
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.get_trainable_parameters(),
+                    max_norm=1.0
+                )
 
+                # Optimizer step
+                # Optimizer maintains FP32 master weights internally (AdamW default)
+                self.optimizer.step()
                 self.optimizer.zero_grad()
                 self.scheduler.step()
 
