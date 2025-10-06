@@ -80,37 +80,50 @@ class ConditionedSDXLUNet(nn.Module):
             def __init__(self, linear_layer):
                 super().__init__()
                 self.linear = linear_layer
-
+                self.reset_count = 0
+                self.max_resets = 10
+            
             def forward(self, x):
+                # Check if weights are corrupted and reset if needed
+                if torch.isnan(self.linear.weight).any() or torch.isinf(self.linear.weight).any():
+                    if self.reset_count < self.max_resets:
+                        print(f"  [RESET] Projection weights corrupted! Resetting (attempt {self.reset_count + 1}/{self.max_resets})")
+                        self._reset_weights()
+                        self.reset_count += 1
+                    else:
+                        print(f"  [ERROR] Too many resets! Keeping corrupted weights.")
+                
                 # Disable autocast for this operation
                 with torch.amp.autocast('cuda', enabled=False):
                     # Ensure input is FP32
                     x_fp32 = x.float() if x.dtype != torch.float32 else x
+                    
+                    # Check for NaN/Inf in input
+                    if torch.isnan(x_fp32).any() or torch.isinf(x_fp32).any():
+                        print(f"  [ERROR] NaN/Inf detected in projection input! Replacing with zeros.")
+                        x_fp32 = torch.zeros_like(x_fp32)
+                    
                     output = self.linear(x_fp32)
-
-                    # Register hook to clip gradients during backward pass
-                    if output.requires_grad:
-                        def clip_grad_hook(grad):
-                            if grad is None:
-                                return None
-                            # Debug: print gradient stats before clipping
-                            print(f"  [GRAD] Projection output gradient: min={grad.min():.4f}, max={grad.max():.4f}, mean={grad.mean():.4f}, has NaN: {torch.isnan(grad).any()}")
-                            # Clip gradient to prevent explosion
-                            clipped_grad = torch.clamp(grad, min=-10.0, max=10.0)
-                            if torch.isnan(grad).any():
-                                print(f"  [GRAD] NaN detected in gradient! Replacing with zeros.")
-                                return torch.zeros_like(grad)
-                            return clipped_grad
-
-                        output.register_hook(clip_grad_hook)
-
+                    
+                    # Check for NaN/Inf in output
+                    if torch.isnan(output).any() or torch.isinf(output).any():
+                        print(f"  [ERROR] NaN/Inf detected in projection output! Replacing with zeros.")
+                        output = torch.zeros_like(output)
+                    
                     return output
+            
+            def _reset_weights(self):
+                """Reset weights to small random values"""
+                with torch.no_grad():
+                    nn.init.xavier_uniform_(self.linear.weight, gain=0.01)  # Even smaller gain
+                    if self.linear.bias is not None:
+                        nn.init.zeros_(self.linear.bias)
 
         self.light_projection = FP32Linear(self.light_projection)
 
         print(f"✓ Conditioned SDXL UNet initialized")
         print(f"  - Light encoder: FP32 (numerically stable)")
-        print(f"  - Light projection: FP32 (forced, autocast disabled, small init, grad clip hook)")
+        print(f"  - Light projection: FP32 (forced, autocast disabled, small init, NaN protection)")
         print(f"  - UNet: FP16 (memory efficient)")
         print(f"  - Autocast: enabled for UNet only")
 

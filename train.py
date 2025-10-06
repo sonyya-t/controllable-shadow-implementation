@@ -315,7 +315,12 @@ class Trainer:
                     light_proj_params = [p for name, p in self.model.named_parameters() 
                                        if 'light_projection' in name]
                     if light_proj_params:
-                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.1)
+                        # Check for NaN gradients before clipping
+                        for param in light_proj_params:
+                            if param.grad is not None and torch.isnan(param.grad).any():
+                                print(f"  [WARNING] NaN gradient detected in light projection! Zeroing gradient.")
+                                param.grad.zero_()
+                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)  # Even more aggressive
                     
                     # General gradient clipping
                     torch.nn.utils.clip_grad_norm_(
@@ -330,7 +335,12 @@ class Trainer:
                     light_proj_params = [p for name, p in self.model.named_parameters() 
                                        if 'light_projection' in name]
                     if light_proj_params:
-                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.1)
+                        # Check for NaN gradients before clipping
+                        for param in light_proj_params:
+                            if param.grad is not None and torch.isnan(param.grad).any():
+                                print(f"  [WARNING] NaN gradient detected in light projection! Zeroing gradient.")
+                                param.grad.zero_()
+                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)  # Even more aggressive
                     
                     # General gradient clipping
                     torch.nn.utils.clip_grad_norm_(
