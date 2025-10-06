@@ -50,13 +50,35 @@ class SDXLUNetForShadows(nn.Module):
         self.conditioning_dim = conditioning_dim
         self.pretrained_model_name = pretrained_model_name
 
-        # Load base SDXL UNet in FP32
+        # Load base SDXL UNet in FP16
         print(f"Loading SDXL UNet from {pretrained_model_name}...")
         self.unet = UNet2DConditionModel.from_pretrained(
             pretrained_model_name,
             subfolder="unet",
-            torch_dtype=torch.float32,
+            torch_dtype=torch.float16,
         )
+
+        # CRITICAL: Ensure ALL parameters and buffers are FP16
+        # torch_dtype only sets initial dtype, but some layers might still be FP32
+        self.unet = self.unet.half()
+        
+        # Verify all parameters are FP16
+        fp32_params = [name for name, param in self.unet.named_parameters() if param.dtype != torch.float16]
+        fp32_buffers = [name for name, buffer in self.unet.named_buffers() if buffer.dtype != torch.float16]
+        
+        if fp32_params:
+            print(f"⚠️  Warning: Found FP32 parameters: {fp32_params}")
+            # Force convert any remaining FP32 parameters
+            for name, param in self.unet.named_parameters():
+                if param.dtype != torch.float16:
+                    param.data = param.data.half()
+        
+        if fp32_buffers:
+            print(f"⚠️  Warning: Found FP32 buffers: {fp32_buffers}")
+            # Force convert any remaining FP32 buffers
+            for name, buffer in self.unet.named_buffers():
+                if buffer.dtype != torch.float16:
+                    buffer.data = buffer.data.half()
 
         # Store original config
         self.config = self.unet.config
@@ -66,6 +88,7 @@ class SDXLUNetForShadows(nn.Module):
         self._modify_input_conv()
 
         print("SDXL UNet loaded and modified successfully!")
+        print("✓ All UNet parameters and buffers verified as FP16")
 
     def _remove_cross_attention(self):
         """
@@ -239,7 +262,7 @@ class SDXLUNetForShadows(nn.Module):
         print(f"Conditioning dim:     {self.conditioning_dim}")
         print(f"Total parameters:     {total_params:,}")
         print(f"Trainable parameters: {trainable_params:,}")
-        print(f"Model size:           {total_params * 4 / 1024**2:.2f} MB (fp32)")
+        print(f"Model size:           {total_params * 2 / 1024**2:.2f} MB (fp16)")
         print("="*60)
         print("\nKey modifications:")
         print("  ✓ Cross-attention blocks disabled")
@@ -272,8 +295,30 @@ class VAEWrapper(nn.Module):
         self.vae = AutoencoderKL.from_pretrained(
             pretrained_model_name,
             subfolder="vae",
-            torch_dtype=torch.float32,
+            torch_dtype=torch.float16,
         )
+
+        # CRITICAL: Ensure ALL VAE parameters and buffers are FP16
+        # torch_dtype only sets initial dtype, but some layers might still be FP32
+        self.vae = self.vae.half()
+        
+        # Verify all VAE parameters are FP16
+        fp32_params = [name for name, param in self.vae.named_parameters() if param.dtype != torch.float16]
+        fp32_buffers = [name for name, buffer in self.vae.named_buffers() if buffer.dtype != torch.float16]
+        
+        if fp32_params:
+            print(f"⚠️  Warning: Found FP32 VAE parameters: {fp32_params}")
+            # Force convert any remaining FP32 parameters
+            for name, param in self.vae.named_parameters():
+                if param.dtype != torch.float16:
+                    param.data = param.data.half()
+        
+        if fp32_buffers:
+            print(f"⚠️  Warning: Found FP32 VAE buffers: {fp32_buffers}")
+            # Force convert any remaining FP32 buffers
+            for name, buffer in self.vae.named_buffers():
+                if buffer.dtype != torch.float16:
+                    buffer.data = buffer.data.half()
 
         # Freeze VAE weights
         for param in self.vae.parameters():
@@ -282,6 +327,7 @@ class VAEWrapper(nn.Module):
         self.vae.eval()
 
         print("SDXL VAE loaded and frozen successfully!")
+        print("✓ All VAE parameters and buffers verified as FP16")
 
     @torch.no_grad()
     def encode(self, images: torch.Tensor) -> torch.Tensor:
@@ -297,19 +343,16 @@ class VAEWrapper(nn.Module):
         # Ensure VAE is in eval mode
         self.vae.eval()
 
-        # Convert to FP32 for VAE encoding (VAE is FP32)
-        original_dtype = images.dtype
-        images_fp32 = images.float()
+        # Ensure input is FP16 (VAE is now FP16)
+        if images.dtype != torch.float16:
+            images = images.half()
 
-        # Encode
-        latent_dist = self.vae.encode(images_fp32).latent_dist
+        # Encode directly in FP16
+        latent_dist = self.vae.encode(images).latent_dist
         latents = latent_dist.sample()
 
         # SDXL uses scaling factor
         latents = latents * self.vae.config.scaling_factor
-
-        # Convert back to FP16 for UNet
-        latents = latents.to(original_dtype)
 
         return latents
 
@@ -327,18 +370,15 @@ class VAEWrapper(nn.Module):
         # Ensure VAE is in eval mode
         self.vae.eval()
 
-        # Convert to FP32 for VAE decoding
-        original_dtype = latents.dtype
-        latents_fp32 = latents.float()
+        # Ensure input is FP16 (VAE is now FP16)
+        if latents.dtype != torch.float16:
+            latents = latents.half()
 
         # Unscale latents
-        latents_fp32 = latents_fp32 / self.vae.config.scaling_factor
+        latents = latents / self.vae.config.scaling_factor
 
-        # Decode
-        images = self.vae.decode(latents_fp32).sample
-
-        # Convert back to original dtype
-        images = images.to(original_dtype)
+        # Decode directly in FP16
+        images = self.vae.decode(latents).sample
 
         return images
 

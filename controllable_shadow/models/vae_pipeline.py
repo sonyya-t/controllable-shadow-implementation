@@ -268,21 +268,14 @@ class VAEPipeline(nn.Module):
         Returns:
             Latent (B, 4, H//8, W//8) in FP16
         """
-        # VAE operates in FP32 (frozen weights)
-        # Force input to FP32 if needed
-        input_dtype = object_image.dtype
-        if object_image.dtype != torch.float32:
-            object_image = object_image.float()
+        # Ensure input is FP16 (VAE is now FP16)
+        if object_image.dtype != torch.float16:
+            object_image = object_image.half()
 
-        # Disable autocast for VAE (must stay in FP32)
-        with torch.cuda.amp.autocast(enabled=False):
-            latent_fp32 = self.vae.encode(object_image)
+        # Encode directly in FP16
+        latent = self.vae.encode(object_image)
 
-        # Convert output to FP16 for training
-        # This is where we fix the dtype chaos!
-        latent_fp16 = latent_fp32.half()
-
-        return latent_fp16
+        return latent
 
     def encode_shadow(self, shadow_map: torch.Tensor) -> torch.Tensor:
         """
@@ -300,19 +293,14 @@ class VAEPipeline(nn.Module):
         # Normalize to [-1, 1] (VAE expects this range!)
         shadow_normalized = self.converter.normalize_shadow(shadow_rgb)
 
-        # Force to FP32 for VAE
-        if shadow_normalized.dtype != torch.float32:
-            shadow_normalized = shadow_normalized.float()
+        # Ensure input is FP16 (VAE is now FP16)
+        if shadow_normalized.dtype != torch.float16:
+            shadow_normalized = shadow_normalized.half()
 
-        # Encode with autocast disabled (VAE must stay in FP32)
-        with torch.cuda.amp.autocast(enabled=False):
-            latent_fp32 = self.vae.encode(shadow_normalized)
+        # Encode directly in FP16
+        latent = self.vae.encode(shadow_normalized)
 
-        # Convert output to FP16 for training
-        # This ensures downstream operations are in FP16
-        latent_fp16 = latent_fp32.half()
-
-        return latent_fp16
+        return latent
 
     def decode_to_shadow(self, latent: torch.Tensor) -> torch.Tensor:
         """
@@ -324,13 +312,12 @@ class VAEPipeline(nn.Module):
         Returns:
             Grayscale shadow (B, 1, H*8, W*8) in [0, 1]
         """
-        # VAE decoder expects FP32
-        if latent.dtype != torch.float32:
-            latent = latent.float()
+        # Ensure input is FP16 (VAE is now FP16)
+        if latent.dtype != torch.float16:
+            latent = latent.half()
 
-        # Disable autocast for VAE decoding (must stay in FP32)
-        with torch.cuda.amp.autocast(enabled=False):
-            shadow_rgb = self.vae.decode(latent)
+        # Decode directly in FP16
+        shadow_rgb = self.vae.decode(latent)
 
         # Convert to grayscale
         shadow_gray = self.converter.rgb_to_grayscale(shadow_rgb)

@@ -121,11 +121,14 @@ class Trainer:
         self.mem_profiler = MemoryProfiler()
         self.perf_profiler = PerformanceProfiler()
 
-        # Mixed precision
-        # Note: We explicitly convert UNet to FP16, so we don't need GradScaler
-        # GradScaler is only for autocast (automatic mixed precision)
-        # Since we use manual FP16 conversion, we handle precision manually
-        self.scaler = None
+        # Mixed precision with autocast + GradScaler
+        # Use GradScaler to prevent gradient underflow in FP16 operations
+        if args.mixed_precision:
+            self.scaler = torch.amp.GradScaler('cuda')
+            self.use_amp = True
+        else:
+            self.scaler = None
+            self.use_amp = False
 
         # Resume if specified
         if args.resume_from:
@@ -155,14 +158,13 @@ class Trainer:
         # Move to device
         model = model.to(self.device)
 
-        # Convert UNet to FP16 for mixed precision training
-        # VAE stays in FP32 (frozen)
-        if self.args.mixed_precision:
-            print("\n🔧 Converting UNet to FP16 for mixed precision training...")
-            # Only convert UNet, not VAE
-            model.unet = model.unet.half()
-            print("   ✓ UNet converted to FP16")
-            print("   ✓ VAE remains in FP32 (frozen)")
+        # For mixed precision, we'll use autocast during forward pass
+        # Don't convert weights to FP16 - let autocast handle it dynamically
+        # This prevents numerical instability in sensitive operations
+        print("\n🔧 Mixed precision training enabled")
+        print("   ✓ Using autocast for dynamic FP16/FP32 selection")
+        print("   ✓ UNet stays in FP32, operations run in FP16 where safe")
+        print("   ✓ VAE remains in FP32 (frozen)")
 
         # Ensure VAE is frozen
         model.freeze_vae()
@@ -266,19 +268,25 @@ class Trainer:
         phi = batch['phi'].to(self.device)
         size = batch['size'].to(self.device)
 
-        # Forward pass
-        # UNet is FP16, VAE is FP32 (handled internally by vae_pipeline.py)
-        # Mixed precision scaler handles gradients
-        loss_dict = self.model.compute_rectified_flow_loss(
-            object_image, mask, shadow_map, theta, phi, size
-        )
+        # Forward pass with autocast for mixed precision
+        # Autocast selectively runs ops in FP16 where safe, FP32 where needed
+        if self.use_amp:
+            with torch.amp.autocast('cuda'):
+                loss_dict = self.model.compute_rectified_flow_loss(
+                    object_image, mask, shadow_map, theta, phi, size
+                )
+        else:
+            loss_dict = self.model.compute_rectified_flow_loss(
+                object_image, mask, shadow_map, theta, phi, size
+            )
 
         loss = loss_dict['loss'] / self.args.gradient_accumulation
 
-        # Backward pass
-        # Loss is already FP32 (from loss computation), gradients will be FP16
-        # This is fine - PyTorch handles it correctly
-        loss.backward()
+        # Backward pass with gradient scaling
+        if self.scaler is not None:
+            self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         return {'loss': loss_dict['loss'].item()}
 
@@ -298,16 +306,24 @@ class Trainer:
 
             # Gradient accumulation
             if (batch_idx + 1) % self.args.gradient_accumulation == 0:
-                # Gradient clipping to prevent explosion
-                # No scaler needed - we use explicit FP16, not autocast
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.get_trainable_parameters(),
-                    max_norm=1.0
-                )
+                # Gradient clipping with scaler support
+                if self.scaler is not None:
+                    # Unscale before clipping
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.get_trainable_parameters(),
+                        max_norm=1.0
+                    )
+                    # Optimizer step with scaler
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.get_trainable_parameters(),
+                        max_norm=1.0
+                    )
+                    self.optimizer.step()
 
-                # Optimizer step
-                # Optimizer maintains FP32 master weights internally (AdamW default)
-                self.optimizer.step()
                 self.optimizer.zero_grad()
                 self.scheduler.step()
 
