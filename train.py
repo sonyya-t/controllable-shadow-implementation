@@ -211,18 +211,24 @@ class Trainer:
 
     def _create_optimizer(self) -> optim.Optimizer:
         """Create AdamW optimizer as per paper."""
-        # Use ultra-conservative learning rate for FP16 stability
-        conservative_lr = self.args.lr * 0.01  # 100x smaller for pure FP16
-        print(f"Using ultra-conservative learning rate: {conservative_lr} (100x smaller for pure FP16)")
+        # Use normal learning rate since light projection is frozen
+        print(f"Using learning rate: {self.args.lr} (light projection frozen)")
         
         optimizer = optim.AdamW(
             self.model.get_trainable_parameters(),
-            lr=conservative_lr,
+            lr=self.args.lr,
             betas=(0.9, 0.999),
             weight_decay=0.01,
         )
         
-        print("✓ Optimizer created (pure FP16 with conservative LR)")
+        # Freeze light projection layer to prevent NaN issues
+        # This allows training the main UNet while keeping conditioning stable
+        for name, param in self.model.named_parameters():
+            if 'light_projection' in name:
+                param.requires_grad = False
+                print(f"  Frozen: {name}")
+        
+        print("✓ Optimizer created (pure FP16 with frozen light projection)")
         return optimizer
 
     def _create_scheduler(self):
@@ -322,12 +328,8 @@ class Trainer:
                             param.grad.zero_()
 
                 # Pure FP16 gradient clipping (no scaler)
-                # Special clipping for light projection layer (prevent NaN)
-                light_proj_params = [p for name, p in self.model.named_parameters()
-                                   if 'light_projection' in name]
-                if light_proj_params:
-                    torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)
-
+                # Light projection is frozen, so no special clipping needed
+                
                 # General gradient clipping
                 torch.nn.utils.clip_grad_norm_(
                     self.model.get_trainable_parameters(),
