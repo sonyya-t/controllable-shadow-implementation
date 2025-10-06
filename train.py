@@ -61,9 +61,9 @@ def parse_args():
                         help="Use gradient checkpointing (saves memory, slower)")
     parser.add_argument("--cpu_offload", action="store_true",
                         help="Offload VAE to CPU (saves VRAM, slower)")
-    parser.add_argument("--quantize", type=str, default="4bit",
+    parser.add_argument("--quantize", type=str, default=None,
                         choices=["8bit", "4bit"],
-                        help="Quantize model to 8bit or 4bit (requires bitsandbytes)")
+                        help="[EXPERIMENTAL] Quantize model (currently uses FP16 instead)")
     parser.add_argument("--num_workers", type=int, default=4,
                         help="Number of dataloader workers")
 
@@ -175,50 +175,29 @@ class Trainer:
         return model
 
     def _quantize_model(self, model):
-        """Quantize model to 8bit or 4bit using bitsandbytes."""
-        try:
-            import bitsandbytes as bnb
-            from torch import nn
-        except ImportError:
-            raise ImportError("bitsandbytes is required for quantization. Install with: pip install bitsandbytes")
+        """
+        Quantize model using bitsandbytes load_in_4bit/8bit.
 
-        def replace_linear_with_quantized(module, quantize_type):
-            """Recursively replace Linear layers with quantized versions."""
-            for name, child in module.named_children():
-                if isinstance(child, nn.Linear):
-                    # Create quantized layer
-                    if quantize_type == "8bit":
-                        quantized_layer = bnb.nn.Linear8bitLt(
-                            child.in_features,
-                            child.out_features,
-                            bias=child.bias is not None,
-                            has_fp16_weights=False,
-                        )
-                    else:  # 4bit
-                        quantized_layer = bnb.nn.Linear4bit(
-                            child.in_features,
-                            child.out_features,
-                            bias=child.bias is not None,
-                        )
+        Note: Due to bitsandbytes limitations, we can't directly quantize an already
+        loaded model. Instead, we recommend loading the base SDXL model with quantization
+        enabled from the start. For now, we'll skip quantization and rely on other
+        memory optimizations.
+        """
+        print("⚠️  Direct post-hoc quantization is not reliably supported.")
+        print("   Using FP16 + gradient checkpointing instead.")
+        print("   For true quantization, use:")
+        print("   1. Load base model with load_in_4bit=True in diffusers")
+        print("   2. Use LoRA/QLoRA for training")
+        print("   3. Or use DeepSpeed ZeRO for model sharding")
 
-                    # Copy weights and bias
-                    with torch.no_grad():
-                        quantized_layer.weight.data = child.weight.data
-                        if child.bias is not None:
-                            quantized_layer.bias.data = child.bias.data
-
-                    setattr(module, name, quantized_layer)
-                else:
-                    replace_linear_with_quantized(child, quantize_type)
-
-        # Quantize only the UNet (trainable part)
-        if hasattr(model, 'unet'):
-            print(f"  Quantizing UNet to {self.args.quantize}...")
-            replace_linear_with_quantized(model.unet, self.args.quantize)
-            print(f"✓ UNet quantized to {self.args.quantize}")
-
-        # Move to device after quantization
+        # Just move to device without quantization
         model = model.to(self.device)
+
+        # Enable FP16 for memory savings
+        if self.args.mixed_precision:
+            model = model.half()
+            print("✓ Model converted to FP16")
+
         return model
 
     def _enable_gradient_checkpointing(self, model):
