@@ -266,11 +266,23 @@ class VAEPipeline(nn.Module):
             object_image: RGB image (B, 3, H, W) in [-1, 1]
 
         Returns:
-            Latent (B, 4, H//8, W//8)
+            Latent (B, 4, H//8, W//8) in FP16
         """
+        # VAE operates in FP32 (frozen weights)
+        # Force input to FP32 if needed
+        input_dtype = object_image.dtype
+        if object_image.dtype != torch.float32:
+            object_image = object_image.float()
+
         # Disable autocast for VAE (must stay in FP32)
         with torch.cuda.amp.autocast(enabled=False):
-            return self.vae.encode(object_image)
+            latent_fp32 = self.vae.encode(object_image)
+
+        # Convert output to FP16 for training
+        # This is where we fix the dtype chaos!
+        latent_fp16 = latent_fp32.half()
+
+        return latent_fp16
 
     def encode_shadow(self, shadow_map: torch.Tensor) -> torch.Tensor:
         """
@@ -280,54 +292,50 @@ class VAEPipeline(nn.Module):
             shadow_map: Grayscale shadow (B, 1, H, W) in [0, 1]
 
         Returns:
-            Latent (B, 4, H//8, W//8)
+            Latent (B, 4, H//8, W//8) in FP16
         """
-        # Debug: Check input
-        if torch.isnan(shadow_map).any() or torch.isinf(shadow_map).any():
-            print(f"\n⚠️  NaN/Inf in shadow_map INPUT: mean={shadow_map.mean()}, min={shadow_map.min()}, max={shadow_map.max()}")
-
         # Convert to RGB
         shadow_rgb = self.converter.grayscale_to_rgb(shadow_map)
 
-        # Debug: Check after RGB conversion
-        if torch.isnan(shadow_rgb).any() or torch.isinf(shadow_rgb).any():
-            print(f"\n⚠️  NaN/Inf after RGB conversion: mean={shadow_rgb.mean()}, min={shadow_rgb.min()}, max={shadow_rgb.max()}")
-
-        # Normalize to [-1, 1]
+        # Normalize to [-1, 1] (VAE expects this range!)
         shadow_normalized = self.converter.normalize_shadow(shadow_rgb)
 
-        # Debug: Check after normalization
-        if torch.isnan(shadow_normalized).any() or torch.isinf(shadow_normalized).any():
-            print(f"\n⚠️  NaN/Inf after normalization: mean={shadow_normalized.mean()}, min={shadow_normalized.min()}, max={shadow_normalized.max()}")
+        # Force to FP32 for VAE
+        if shadow_normalized.dtype != torch.float32:
+            shadow_normalized = shadow_normalized.float()
 
         # Encode with autocast disabled (VAE must stay in FP32)
         with torch.cuda.amp.autocast(enabled=False):
-            latent = self.vae.encode(shadow_normalized)
+            latent_fp32 = self.vae.encode(shadow_normalized)
 
-        # Debug: Check VAE output
-        if torch.isnan(latent).any() or torch.isinf(latent).any():
-            print(f"\n⚠️  NaN/Inf in VAE ENCODE OUTPUT: mean={latent.mean()}, min={latent.min()}, max={latent.max()}")
-            print(f"   Input to VAE was: mean={shadow_normalized.mean()}, std={shadow_normalized.std()}, dtype={shadow_normalized.dtype}")
+        # Convert output to FP16 for training
+        # This ensures downstream operations are in FP16
+        latent_fp16 = latent_fp32.half()
 
-        return latent
+        return latent_fp16
 
     def decode_to_shadow(self, latent: torch.Tensor) -> torch.Tensor:
         """
         Decode latent to grayscale shadow map.
 
         Args:
-            latent: Latent (B, 4, H, W)
+            latent: Latent (B, 4, H, W) in FP16
 
         Returns:
             Grayscale shadow (B, 1, H*8, W*8) in [0, 1]
         """
-        # Decode to RGB
-        shadow_rgb = self.vae.decode(latent)
+        # VAE decoder expects FP32
+        if latent.dtype != torch.float32:
+            latent = latent.float()
+
+        # Disable autocast for VAE decoding (must stay in FP32)
+        with torch.cuda.amp.autocast(enabled=False):
+            shadow_rgb = self.vae.decode(latent)
 
         # Convert to grayscale
         shadow_gray = self.converter.rgb_to_grayscale(shadow_rgb)
 
-        # Denormalize to [0, 1]
+        # Denormalize from [-1, 1] to [0, 1]
         shadow_final = self.converter.denormalize_shadow(shadow_gray)
 
         # Clamp to valid range

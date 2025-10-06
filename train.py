@@ -59,11 +59,8 @@ def parse_args():
                         help="Use mixed precision training")
     parser.add_argument("--gradient_checkpointing", action="store_true",
                         help="Use gradient checkpointing (saves memory, slower)")
-    parser.add_argument("--cpu_offload", action="store_true",
-                        help="Offload VAE to CPU (saves VRAM, slower)")
-    parser.add_argument("--quantize", type=str, default=None,
-                        choices=["8bit", "4bit"],
-                        help="[EXPERIMENTAL] Quantize model (currently uses FP16 instead)")
+    # CPU offload removed - not beneficial for this architecture
+    # Quantization removed - use FP16 mixed precision instead
     parser.add_argument("--num_workers", type=int, default=4,
                         help="Number of dataloader workers")
 
@@ -143,7 +140,6 @@ class Trainer:
         print(f"Mixed precision: {args.mixed_precision}")
         print(f"Gradient checkpointing: {args.gradient_checkpointing}")
         print(f"Gradient accumulation: {args.gradient_accumulation}")
-        print(f"Quantization: {args.quantize if args.quantize else 'None'}")
         print(f"{'='*70}\n")
 
     def _create_model(self) -> ShadowDiffusionModel:
@@ -153,14 +149,11 @@ class Trainer:
             image_size=(self.args.image_size, self.args.image_size),
         )
 
-        # Apply quantization before moving to device if requested
-        if self.args.quantize:
-            print(f"\n🔧 Quantizing model to {self.args.quantize}...")
-            model = self._quantize_model(model)
-        else:
-            model = model.to(self.device)
+        # Move to device
+        model = model.to(self.device)
 
-        model.freeze_vae()  # Ensure VAE is frozen
+        # Ensure VAE is frozen
+        model.freeze_vae()
 
         # Enable gradient checkpointing if requested
         if self.args.gradient_checkpointing:
@@ -171,32 +164,6 @@ class Trainer:
 
         # Print model summary
         model.print_model_summary()
-
-        return model
-
-    def _quantize_model(self, model):
-        """
-        Quantize model using bitsandbytes load_in_4bit/8bit.
-
-        Note: Due to bitsandbytes limitations, we can't directly quantize an already
-        loaded model. Instead, we recommend loading the base SDXL model with quantization
-        enabled from the start. For now, we'll skip quantization and rely on other
-        memory optimizations.
-        """
-        print("⚠️  Direct post-hoc quantization is not reliably supported.")
-        print("   Using FP16 + gradient checkpointing instead.")
-        print("   For true quantization, use:")
-        print("   1. Load base model with load_in_4bit=True in diffusers")
-        print("   2. Use LoRA/QLoRA for training")
-        print("   3. Or use DeepSpeed ZeRO for model sharding")
-
-        # Just move to device without quantization
-        model = model.to(self.device)
-
-        # Enable FP16 for memory savings
-        if self.args.mixed_precision:
-            model = model.half()
-            print("✓ Model converted to FP16")
 
         return model
 
@@ -279,13 +246,11 @@ class Trainer:
         Returns:
             Dictionary with loss and metrics
         """
-        # Move batch to device (or CPU if offloading VAE)
-        device = 'cpu' if self.args.cpu_offload else self.device
-
-        object_image = batch['object_image'].to(device)
-        mask = batch['mask'].to(device)
-        shadow_map = batch['shadow_map'].to(device)
-        theta = batch['theta'].to(self.device)  # Light params stay on GPU
+        # Move batch to device
+        object_image = batch['object_image'].to(self.device)
+        mask = batch['mask'].to(self.device)
+        shadow_map = batch['shadow_map'].to(self.device)
+        theta = batch['theta'].to(self.device)
         phi = batch['phi'].to(self.device)
         size = batch['size'].to(self.device)
 

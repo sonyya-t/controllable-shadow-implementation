@@ -148,17 +148,20 @@ class ShadowDiffusionModel(nn.Module):
         device = object_image.device
 
         # Encode target shadow to latent space (x_1, clean target)
-        # NOTE: VAE encoder applies scaling_factor (0.13025) and converts to FP16
-        x1 = self.vae_pipeline.encode_shadow(shadow_map_target)
+        # VAE encoder returns FP16 (after internal FP32 processing)
+        x1 = self.vae_pipeline.encode_shadow(shadow_map_target)  # Returns FP16
 
-        # Get target dtype from UNet (FP16)
-        target_dtype = x1.dtype
+        # All training operations happen in FP16 for memory efficiency
+        target_dtype = torch.float16
 
-        # Sample random noise (x_0, noise source)
-        # IMPORTANT: x0 must have same scale and dtype as x1 for proper interpolation
-        x0 = torch.randn_like(x1)  # Automatically matches dtype
+        # Verify VAE actually returned FP16
+        if x1.dtype != target_dtype:
+            x1 = x1.to(target_dtype)
 
-        # Sample random timestep t ~ Uniform(0, 1) with correct dtype
+        # Sample random noise (x_0, noise source) in FP16
+        x0 = torch.randn_like(x1)  # Matches x1 dtype (FP16)
+
+        # Sample random timestep t ~ Uniform(0, 1) in FP16
         t = torch.rand(batch_size, device=device, dtype=target_dtype)
 
         # Linear interpolation: x_t = t*x_1 + (1-t)*x_0
@@ -167,13 +170,19 @@ class ShadowDiffusionModel(nn.Module):
         xt = t_broadcast * x1 + (1 - t_broadcast) * x0
 
         # Prepare input: concatenate [xt, object_latent, mask]
-        # We need to replace noise with xt in the pipeline
-        object_latent = self.vae_pipeline.encode_object(object_image)
+        # VAE encode_object returns FP16
+        object_latent = self.vae_pipeline.encode_object(object_image)  # Returns FP16
 
-        # Resize mask to latent size with correct dtype
+        # Ensure object_latent is FP16
+        if object_latent.dtype != target_dtype:
+            object_latent = object_latent.to(target_dtype)
+
+        # Resize mask to latent size in FP16
         mask_latent = self.vae_pipeline.mask_processor.resize_to_latent(
             mask, self.latent_size
         ).to(target_dtype)
+
+        # Concatenate all in FP16: [xt(4) + object(4) + mask(1)] = 9 channels
         unet_input = self.vae_pipeline.concatenator.concatenate(
             xt, object_latent, mask_latent
         )
@@ -191,19 +200,17 @@ class ShadowDiffusionModel(nn.Module):
         target_velocity = x1 - x0
 
         # Rectified flow loss: MSE between predicted and target velocity
-        loss = torch.nn.functional.mse_loss(predicted_velocity, target_velocity)
+        # Compute in FP16, then convert to FP32 for numerical stability
+        loss_fp16 = torch.nn.functional.mse_loss(predicted_velocity, target_velocity, reduction='none')
+        loss = loss_fp16.float().mean()  # Final loss in FP32 for stability
 
-        # Debug: Check for NaN/Inf
+        # Sanity check for NaN/Inf
         if torch.isnan(loss) or torch.isinf(loss):
-            print("\n⚠️  NaN/Inf detected in loss computation!")
-            print(f"   x0 (noise) stats: mean={x0.mean():.4f}, std={x0.std():.4f}, min={x0.min():.4f}, max={x0.max():.4f}")
-            print(f"   x1 (target) stats: mean={x1.mean():.4f}, std={x1.std():.4f}, min={x1.min():.4f}, max={x1.min():.4f}")
-            print(f"   xt (interpolated) stats: mean={xt.mean():.4f}, std={xt.std():.4f}")
-            print(f"   object_latent stats: mean={object_latent.mean():.4f}, std={object_latent.std():.4f}")
-            print(f"   predicted_velocity stats: mean={predicted_velocity.mean():.4f}, std={predicted_velocity.std():.4f}")
-            print(f"   target_velocity stats: mean={target_velocity.mean():.4f}, std={target_velocity.std():.4f}")
-            print(f"   Has NaN in predicted: {torch.isnan(predicted_velocity).any()}")
-            print(f"   Has NaN in target: {torch.isnan(target_velocity).any()}")
+            print("\n⚠️  NaN/Inf detected in loss!")
+            print(f"   x0 (noise): mean={x0.float().mean():.4f}, std={x0.float().std():.4f}")
+            print(f"   x1 (target): mean={x1.float().mean():.4f}, std={x1.float().std():.4f}")
+            print(f"   predicted_velocity: mean={predicted_velocity.float().mean():.4f}")
+            print(f"   target_velocity: mean={target_velocity.float().mean():.4f}")
 
         return {
             "loss": loss,
