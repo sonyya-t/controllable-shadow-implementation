@@ -295,33 +295,16 @@ class VAEWrapper(nn.Module):
         super().__init__()
 
         print(f"Loading SDXL VAE from {pretrained_model_name}...")
+        # VAE must stay in FP32 for numerical stability
+        # VAE has sensitive operations (GroupNorm, KL divergence) that overflow in FP16
+        # This is standard practice in Stable Diffusion (UNet FP16, VAE FP32)
         self.vae = AutoencoderKL.from_pretrained(
             pretrained_model_name,
             subfolder="vae",
-            torch_dtype=torch.float16,
+            torch_dtype=torch.float32,  # Keep FP32 for stability
         )
 
-        # CRITICAL: Ensure ALL VAE parameters and buffers are FP16
-        # torch_dtype only sets initial dtype, but some layers might still be FP32
-        self.vae = self.vae.half()
-        
-        # Verify all VAE parameters are FP16
-        fp32_params = [name for name, param in self.vae.named_parameters() if param.dtype != torch.float16]
-        fp32_buffers = [name for name, buffer in self.vae.named_buffers() if buffer.dtype != torch.float16]
-        
-        if fp32_params:
-            print(f"⚠️  Warning: Found FP32 VAE parameters: {fp32_params}")
-            # Force convert any remaining FP32 parameters
-            for name, param in self.vae.named_parameters():
-                if param.dtype != torch.float16:
-                    param.data = param.data.half()
-        
-        if fp32_buffers:
-            print(f"⚠️  Warning: Found FP32 VAE buffers: {fp32_buffers}")
-            # Force convert any remaining FP32 buffers
-            for name, buffer in self.vae.named_buffers():
-                if buffer.dtype != torch.float16:
-                    buffer.data = buffer.data.half()
+        print("✓ VAE loaded in FP32 for numerical stability")
 
         # Freeze VAE weights
         for param in self.vae.parameters():

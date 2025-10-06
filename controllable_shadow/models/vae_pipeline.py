@@ -268,12 +268,16 @@ class VAEPipeline(nn.Module):
         Returns:
             Latent (B, 4, H//8, W//8) in FP16
         """
-        # Ensure input is FP16 (VAE is now FP16)
-        if object_image.dtype != torch.float16:
-            object_image = object_image.half()
+        # VAE runs in FP32 for numerical stability
+        # Convert input to FP32 if needed
+        if object_image.dtype != torch.float32:
+            object_image = object_image.float()
 
-        # Encode directly in FP16
-        latent = self.vae.encode(object_image)
+        # Encode in FP32
+        latent_fp32 = self.vae.encode(object_image)
+
+        # Convert to FP16 for training
+        latent = latent_fp32.half()
 
         return latent
 
@@ -293,12 +297,16 @@ class VAEPipeline(nn.Module):
         # Normalize to [-1, 1] (VAE expects this range!)
         shadow_normalized = self.converter.normalize_shadow(shadow_rgb)
 
-        # Ensure input is FP16 (VAE is now FP16)
-        if shadow_normalized.dtype != torch.float16:
-            shadow_normalized = shadow_normalized.half()
+        # VAE runs in FP32 for numerical stability
+        # Convert input to FP32 if needed
+        if shadow_normalized.dtype != torch.float32:
+            shadow_normalized = shadow_normalized.float()
 
-        # Encode directly in FP16
-        latent = self.vae.encode(shadow_normalized)
+        # Encode in FP32
+        latent_fp32 = self.vae.encode(shadow_normalized)
+
+        # Convert to FP16 for training
+        latent = latent_fp32.half()
 
         return latent
 
@@ -312,11 +320,12 @@ class VAEPipeline(nn.Module):
         Returns:
             Grayscale shadow (B, 1, H*8, W*8) in [0, 1]
         """
-        # Ensure input is FP16 (VAE is now FP16)
-        if latent.dtype != torch.float16:
-            latent = latent.half()
+        # VAE runs in FP32 for numerical stability
+        # Convert input to FP32 if needed
+        if latent.dtype != torch.float32:
+            latent = latent.float()
 
-        # Decode directly in FP16
+        # Decode in FP32
         shadow_rgb = self.vae.decode(latent)
 
         # Convert to grayscale
