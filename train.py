@@ -306,22 +306,27 @@ class Trainer:
 
             # Gradient accumulation
             if (batch_idx + 1) % self.args.gradient_accumulation == 0:
+                # DEBUG: Check projection layer before optimizer step
+                for name, param in self.model.named_parameters():
+                    if 'light_projection' in name and param.grad is not None:
+                        print(f"\n  [PRE-OPTIMIZER] {name}:")
+                        print(f"    Weight: dtype={param.dtype}, min={param.min():.6f}, max={param.max():.6f}, has_nan={torch.isnan(param).any()}")
+                        print(f"    Gradient: dtype={param.grad.dtype}, min={param.grad.min():.6f}, max={param.grad.max():.6f}, has_nan={torch.isnan(param.grad).any()}")
+                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                            print(f"    [ERROR] Gradient has NaN/Inf! Zeroing.")
+                            param.grad.zero_()
+
                 # Gradient clipping with scaler support
                 if self.scaler is not None:
                     # Unscale before clipping
                     self.scaler.unscale_(self.optimizer)
-                    
+
                     # Special clipping for light projection layer (prevent NaN)
-                    light_proj_params = [p for name, p in self.model.named_parameters() 
+                    light_proj_params = [p for name, p in self.model.named_parameters()
                                        if 'light_projection' in name]
                     if light_proj_params:
-                        # Check for NaN gradients before clipping
-                        for param in light_proj_params:
-                            if param.grad is not None and torch.isnan(param.grad).any():
-                                print(f"  [WARNING] NaN gradient detected in light projection! Zeroing gradient.")
-                                param.grad.zero_()
-                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)  # Even more aggressive
-                    
+                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)
+
                     # General gradient clipping
                     torch.nn.utils.clip_grad_norm_(
                         self.model.get_trainable_parameters(),
@@ -332,22 +337,23 @@ class Trainer:
                     self.scaler.update()
                 else:
                     # Special clipping for light projection layer (prevent NaN)
-                    light_proj_params = [p for name, p in self.model.named_parameters() 
+                    light_proj_params = [p for name, p in self.model.named_parameters()
                                        if 'light_projection' in name]
                     if light_proj_params:
-                        # Check for NaN gradients before clipping
-                        for param in light_proj_params:
-                            if param.grad is not None and torch.isnan(param.grad).any():
-                                print(f"  [WARNING] NaN gradient detected in light projection! Zeroing gradient.")
-                                param.grad.zero_()
-                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)  # Even more aggressive
-                    
+                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.01)
+
                     # General gradient clipping
                     torch.nn.utils.clip_grad_norm_(
                         self.model.get_trainable_parameters(),
                         max_norm=1.0
                     )
                     self.optimizer.step()
+
+                # DEBUG: Check projection layer after optimizer step
+                for name, param in self.model.named_parameters():
+                    if 'light_projection' in name:
+                        print(f"\n  [POST-OPTIMIZER] {name}:")
+                        print(f"    Weight: dtype={param.dtype}, min={param.min():.6f}, max={param.max():.6f}, has_nan={torch.isnan(param).any()}")
 
                 self.optimizer.zero_grad()
                 self.scheduler.step()
