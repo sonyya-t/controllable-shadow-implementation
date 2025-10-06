@@ -64,15 +64,55 @@ class ConditionedSDXLUNet(nn.Module):
         )
 
         # Project light embeddings to SDXL's time embedding dimension (1280)
-        # CRITICAL: Keep projection in FP32 to avoid weight corruption
-        # Autocast will handle FP16 conversion during forward pass (no explicit .half())
+        # CRITICAL: Proper initialization to prevent gradient explosion
         self.light_projection = nn.Linear(768, 1280)
+        
+        # Initialize with small weights to prevent gradient explosion
+        with torch.no_grad():
+            # Xavier uniform initialization with smaller scale
+            nn.init.xavier_uniform_(self.light_projection.weight, gain=0.1)
+            if self.light_projection.bias is not None:
+                nn.init.zeros_(self.light_projection.bias)
+
+        # Wrap projection to force FP32 computation even under autocast
+        # This ensures both forward and backward are FP32, preventing gradient dtype mismatch
+        class FP32Linear(nn.Module):
+            def __init__(self, linear_layer):
+                super().__init__()
+                self.linear = linear_layer
+
+            def forward(self, x):
+                # Disable autocast for this operation
+                with torch.amp.autocast('cuda', enabled=False):
+                    # Ensure input is FP32
+                    x_fp32 = x.float() if x.dtype != torch.float32 else x
+                    output = self.linear(x_fp32)
+
+                    # Register hook to clip gradients during backward pass
+                    if output.requires_grad:
+                        def clip_grad_hook(grad):
+                            if grad is None:
+                                return None
+                            # Debug: print gradient stats before clipping
+                            print(f"  [GRAD] Projection output gradient: min={grad.min():.4f}, max={grad.max():.4f}, mean={grad.mean():.4f}, has NaN: {torch.isnan(grad).any()}")
+                            # Clip gradient to prevent explosion
+                            clipped_grad = torch.clamp(grad, min=-10.0, max=10.0)
+                            if torch.isnan(grad).any():
+                                print(f"  [GRAD] NaN detected in gradient! Replacing with zeros.")
+                                return torch.zeros_like(grad)
+                            return clipped_grad
+
+                        output.register_hook(clip_grad_hook)
+
+                    return output
+
+        self.light_projection = FP32Linear(self.light_projection)
 
         print(f"✓ Conditioned SDXL UNet initialized")
         print(f"  - Light encoder: FP32 (numerically stable)")
-        print(f"  - Light projection: FP32 (avoids weight corruption)")
+        print(f"  - Light projection: FP32 (forced, autocast disabled, small init, grad clip hook)")
         print(f"  - UNet: FP16 (memory efficient)")
-        print(f"  - Autocast: enabled (selective FP16 during forward pass)")
+        print(f"  - Autocast: enabled for UNet only")
 
     def encode_light_parameters(
         self,
@@ -99,13 +139,16 @@ class ConditionedSDXLUNet(nn.Module):
         print(f"  Stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
         print(f"  Has NaN: {torch.isnan(light_emb).any()}")
 
-        # Project in FP32 (projection layer is FP32, autocast disabled here)
-        # Autocast will be disabled for this entire light encoding path
+        # Project in FP32 (FP32Linear wrapper disables autocast internally)
         light_emb_projected = self.light_projection(light_emb)  # (B, 1280) FP32
 
         print(f"  After projection (FP32): shape={light_emb_projected.shape}, dtype={light_emb_projected.dtype}")
         print(f"  Stats: min={light_emb_projected.min():.4f}, max={light_emb_projected.max():.4f}, mean={light_emb_projected.mean():.4f}")
         print(f"  Has NaN: {torch.isnan(light_emb_projected).any()}")
+
+        # Check projection weights for NaN
+        proj_weight = self.light_projection.linear.weight
+        print(f"  Projection weights: dtype={proj_weight.dtype}, has NaN: {torch.isnan(proj_weight).any()}")
 
         return light_emb_projected
 
@@ -140,25 +183,17 @@ class ConditionedSDXLUNet(nn.Module):
             timestep = timestep.expand(batch_size)
 
         # 1. Encode light parameters (θ, φ, s) → 1280-dim
-        # Disable autocast for light encoding to keep everything in FP32
-        with torch.amp.autocast('cuda', enabled=False):
-            # This returns projected light embeddings in FP32
-            light_emb_fp32 = self.encode_light_parameters(theta, phi, size)  # (B, 1280) FP32
+        # FP32Linear wrapper ensures this is computed in FP32 even under autocast
+        light_emb = self.encode_light_parameters(theta, phi, size)  # (B, 1280) FP32
 
-        # Convert to UNet's dtype (FP16) for SDXL processing
-        light_emb = light_emb_fp32.to(sample.dtype)  # (B, 1280) FP16
+        # Keep in FP32 - let SDXL's add_embedding handle dtype conversion internally
+        # SDXL add_embedding expects text_embeds and will convert as needed
 
         print(f"\n[DEBUG] ConditionedUNet - Light parameters:")
         print(f"  theta: {theta}, phi: {phi}, size: {size}")
-        print(f"  light_emb_fp32 shape: {light_emb_fp32.shape}, dtype: {light_emb_fp32.dtype}")
-        print(f"  light_emb_fp32 stats: min={light_emb_fp32.min():.4f}, max={light_emb_fp32.max():.4f}, mean={light_emb_fp32.mean():.4f}")
-        print(f"  light_emb_fp32 has NaN: {torch.isnan(light_emb_fp32).any()}")
-        print(f"  light_emb (FP16) shape: {light_emb.shape}, dtype: {light_emb.dtype}")
-        print(f"  light_emb (FP16) has NaN: {torch.isnan(light_emb).any()}")
-
-        # Debug projection layer weights
-        proj_weight = self.light_projection.weight
-        print(f"  light_projection.weight: dtype={proj_weight.dtype}, has NaN: {torch.isnan(proj_weight).any()}")
+        print(f"  light_emb shape: {light_emb.shape}, dtype: {light_emb.dtype}")
+        print(f"  light_emb stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
+        print(f"  light_emb has NaN: {torch.isnan(light_emb).any()}")
 
         # 2. Validate embedding dimension
         expected_dim = 1280  # SDXL time embedding dimension
@@ -168,10 +203,8 @@ class ConditionedSDXLUNet(nn.Module):
             )
 
         # 3. Run UNet forward pass
-        # Ensure all inputs match UNet dtype (FP16)
+        # Ensure sample and timestep match UNet dtype (FP16)
         target_dtype = sample.dtype
-
-        # light_emb already converted to target dtype on line 149
 
         # Create dummy encoder_hidden_states (not used since cross-attention removed)
         encoder_hidden_states = torch.zeros(batch_size, 77, 768, device=sample.device, dtype=target_dtype)
@@ -179,14 +212,15 @@ class ConditionedSDXLUNet(nn.Module):
         # SDXL uses added_cond_kwargs to inject additional embeddings
         # SDXL's add_embedding: concat(text_embeds[1280], time_ids[6]) → Linear → 1280
         # Then: timestep_emb + add_emb
-        # We pass light embeddings as text_embeds, and proper time_ids
+        # We pass light embeddings as text_embeds (FP32), SDXL will handle conversion
         added_cond_kwargs = {
-            "text_embeds": light_emb,  # Light embeddings (B, 1280) in FP16
+            "text_embeds": light_emb,  # Light embeddings (B, 1280) in FP32
             # time_ids format: [h_orig, w_orig, crop_top, crop_left, h_target, w_target]
             # Use image size (1024) for all to avoid NaN from zeros
+            # Keep time_ids in FP32 as well to match text_embeds
             "time_ids": torch.tensor([[1024, 1024, 0, 0, 1024, 1024]],
                                     device=sample.device,
-                                    dtype=target_dtype).repeat(batch_size, 1),
+                                    dtype=torch.float32).repeat(batch_size, 1),
         }
 
         # Forward through UNet

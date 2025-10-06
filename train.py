@@ -310,6 +310,14 @@ class Trainer:
                 if self.scaler is not None:
                     # Unscale before clipping
                     self.scaler.unscale_(self.optimizer)
+                    
+                    # Special clipping for light projection layer (prevent NaN)
+                    light_proj_params = [p for name, p in self.model.named_parameters() 
+                                       if 'light_projection' in name]
+                    if light_proj_params:
+                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.1)
+                    
+                    # General gradient clipping
                     torch.nn.utils.clip_grad_norm_(
                         self.model.get_trainable_parameters(),
                         max_norm=1.0
@@ -318,6 +326,13 @@ class Trainer:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
+                    # Special clipping for light projection layer (prevent NaN)
+                    light_proj_params = [p for name, p in self.model.named_parameters() 
+                                       if 'light_projection' in name]
+                    if light_proj_params:
+                        torch.nn.utils.clip_grad_norm_(light_proj_params, max_norm=0.1)
+                    
+                    # General gradient clipping
                     torch.nn.utils.clip_grad_norm_(
                         self.model.get_trainable_parameters(),
                         max_norm=1.0
