@@ -123,8 +123,9 @@ class Trainer:
 
         # Use autocast for forward pass to keep sensitive ops in FP32
         # Pure FP16 training - no mixed precision
-        self.scaler = None
-        self.use_amp = False  # Disable autocast completely
+        # Mixed precision setup
+        self.scaler = torch.cuda.amp.GradScaler()
+        self.use_amp = True  # Enable smart autocast
 
         # Resume if specified
         if args.resume_from:
@@ -210,9 +211,8 @@ class Trainer:
         )
 
     def _create_optimizer(self) -> optim.Optimizer:
-        """Create AdamW optimizer as per paper."""
-        # Use normal learning rate since light projection is frozen
-        print(f"Using learning rate: {self.args.lr} (light projection frozen)")
+        """Create AdamW optimizer with smart mixed precision."""
+        print(f"Using learning rate: {self.args.lr} (smart mixed precision)")
         
         optimizer = optim.AdamW(
             self.model.get_trainable_parameters(),
@@ -221,14 +221,7 @@ class Trainer:
             weight_decay=0.01,
         )
         
-        # Freeze light projection layer to prevent NaN issues
-        # This allows training the main UNet while keeping conditioning stable
-        for name, param in self.model.named_parameters():
-            if 'light_projection' in name:
-                param.requires_grad = False
-                print(f"  Frozen: {name}")
-        
-        print("✓ Optimizer created (pure FP16 with frozen light projection)")
+        print("✓ Optimizer created (mixed precision: autocast handles FP16/FP32 automatically)")
         return optimizer
 
     def _create_scheduler(self):
@@ -284,7 +277,7 @@ class Trainer:
         # Forward pass with autocast for mixed precision
         # Autocast selectively runs ops in FP16 where safe, FP32 where needed
         if self.use_amp:
-            with torch.amp.autocast('cuda'):
+            with torch.cuda.amp.autocast():
                 loss_dict = self.model.compute_rectified_flow_loss(
                     object_image, mask, shadow_map, theta, phi, size
                 )
@@ -296,8 +289,10 @@ class Trainer:
         loss = loss_dict['loss'] / self.args.gradient_accumulation
 
         # Backward pass with gradient scaling
-        # Backward pass (pure FP16)
-        loss.backward()
+        if self.use_amp:
+            self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         return {'loss': loss_dict['loss'].item()}
 
@@ -327,17 +322,29 @@ class Trainer:
                             print(f"    [ERROR] Gradient has NaN/Inf! Zeroing.")
                             param.grad.zero_()
 
-                # Pure FP16 gradient clipping (no scaler)
-                # Light projection is frozen, so no special clipping needed
-                
-                # General gradient clipping
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.get_trainable_parameters(),
-                    max_norm=1.0
-                )
-                
-                # Optimizer step (pure FP16)
-                self.optimizer.step()
+                # Gradient clipping and optimizer step
+                if self.use_amp:
+                    # Unscale gradients before clipping
+                    self.scaler.unscale_(self.optimizer)
+                    
+                    # Gradient clipping
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.get_trainable_parameters(),
+                        max_norm=1.0
+                    )
+                    
+                    # Optimizer step with scaler
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    # Pure FP16 gradient clipping
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.get_trainable_parameters(),
+                        max_norm=0.1
+                    )
+                    
+                    # Optimizer step (pure FP16)
+                    self.optimizer.step()
 
                 # DEBUG: Check projection layer after optimizer step
                 for name, param in self.model.named_parameters():

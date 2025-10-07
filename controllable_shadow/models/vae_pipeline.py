@@ -266,21 +266,10 @@ class VAEPipeline(nn.Module):
             object_image: RGB image (B, 3, H, W) in [-1, 1]
 
         Returns:
-            Latent (B, 4, H//8, W//8) in FP16
+            Latent (B, 4, H//8, W//8) matching VAE dtype
         """
-        # VAE must run in FP32, disable autocast if active
-        # Autocast context can convert inputs to FP16, which causes dtype mismatch
-        with torch.amp.autocast('cuda', enabled=False):
-            # Ensure input is FP32
-            if object_image.dtype != torch.float32:
-                object_image = object_image.float()
-
-            # Encode in FP32
-            latent_fp32 = self.vae.encode(object_image)
-
-        # Convert to FP16 for UNet training
-        latent = latent_fp32.half()
-
+        # VAEWrapper handles dtype matching internally
+        latent = self.vae.encode(object_image)
         return latent
 
     def encode_shadow(self, shadow_map: torch.Tensor) -> torch.Tensor:
@@ -291,26 +280,16 @@ class VAEPipeline(nn.Module):
             shadow_map: Grayscale shadow (B, 1, H, W) in [0, 1]
 
         Returns:
-            Latent (B, 4, H//8, W//8) in FP16
+            Latent (B, 4, H//8, W//8) matching VAE dtype
         """
-        # VAE must run in FP32, disable autocast for entire preprocessing + encoding
-        # Autocast context can convert inputs to FP16, which causes dtype mismatch
-        with torch.amp.autocast('cuda', enabled=False):
-            # Convert to RGB (in FP32)
-            shadow_rgb = self.converter.grayscale_to_rgb(shadow_map)
+        # Convert to RGB
+        shadow_rgb = self.converter.grayscale_to_rgb(shadow_map)
 
-            # Normalize to [-1, 1] (VAE expects this range, in FP32!)
-            shadow_normalized = self.converter.normalize_shadow(shadow_rgb)
+        # Normalize to [-1, 1] (VAE expects this range)
+        shadow_normalized = self.converter.normalize_shadow(shadow_rgb)
 
-            # Ensure input is FP32
-            if shadow_normalized.dtype != torch.float32:
-                shadow_normalized = shadow_normalized.float()
-
-            # Encode in FP32
-            latent_fp32 = self.vae.encode(shadow_normalized)
-
-        # Convert to FP16 for UNet training
-        latent = latent_fp32.half()
+        # VAEWrapper handles dtype matching internally
+        latent = self.vae.encode(shadow_normalized)
 
         return latent
 
@@ -319,20 +298,13 @@ class VAEPipeline(nn.Module):
         Decode latent to grayscale shadow map.
 
         Args:
-            latent: Latent (B, 4, H, W) in FP16
+            latent: Latent (B, 4, H, W) matching VAE dtype
 
         Returns:
             Grayscale shadow (B, 1, H*8, W*8) in [0, 1]
         """
-        # VAE must run in FP32, disable autocast if active
-        # Autocast context can convert inputs to FP16, which causes dtype mismatch
-        with torch.amp.autocast('cuda', enabled=False):
-            # Ensure input is FP32
-            if latent.dtype != torch.float32:
-                latent = latent.float()
-
-            # Decode in FP32
-            shadow_rgb = self.vae.decode(latent)
+        # VAEWrapper handles dtype matching internally
+        shadow_rgb = self.vae.decode(latent)
 
         # Convert to grayscale
         shadow_gray = self.converter.rgb_to_grayscale(shadow_rgb)
