@@ -210,14 +210,42 @@ class Trainer:
         # Use normal learning rate for all trainable parameters
         print(f"Using learning rate: {self.args.lr}")
         
+        # Create parameter groups with different learning rates
+        param_groups = []
+        
+        # Main UNet parameters with normal learning rate
+        unet_params = []
+        light_projection_params = []
+        
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                if 'light_projection' in name:
+                    light_projection_params.append(param)
+                else:
+                    unet_params.append(param)
+        
+        # Use smaller learning rate for light projection to prevent instability
+        param_groups.append({
+            'params': unet_params,
+            'lr': self.args.lr,
+            'name': 'unet'
+        })
+        
+        param_groups.append({
+            'params': light_projection_params,
+            'lr': self.args.lr * 0.1,  # 10x smaller learning rate for stability
+            'name': 'light_projection'
+        })
+        
         optimizer = optim.AdamW(
-            self.model.get_trainable_parameters(),
-            lr=self.args.lr,
+            param_groups,
             betas=(0.9, 0.999),
             weight_decay=0.01,
         )
         
-        print("✓ Optimizer created (pure FP16)")
+        print(f"✓ Optimizer created (pure FP16)")
+        print(f"  - UNet params: {len(unet_params)} with lr={self.args.lr}")
+        print(f"  - Light projection params: {len(light_projection_params)} with lr={self.args.lr * 0.1}")
         return optimizer
 
     def _create_scheduler(self):
