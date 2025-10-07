@@ -70,8 +70,8 @@ class ConditionedSDXLUNet(nn.Module):
 
         # Initialize with extremely small weights to prevent gradient explosion in FP16
         with torch.no_grad():
-            # Use normal initialization with very small std for FP16 stability
-            nn.init.normal_(self.light_projection.weight, mean=0.0, std=0.0001)
+            # Use normal initialization with extremely small std for FP16 stability
+            nn.init.normal_(self.light_projection.weight, mean=0.0, std=0.00001)
             if self.light_projection.bias is not None:
                 nn.init.zeros_(self.light_projection.bias)
 
