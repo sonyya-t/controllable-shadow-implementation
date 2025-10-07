@@ -207,8 +207,8 @@ class Trainer:
 
     def _create_optimizer(self) -> optim.Optimizer:
         """Create AdamW optimizer as per paper."""
-        # Use normal learning rate since light projection is frozen
-        print(f"Using learning rate: {self.args.lr} (light projection frozen)")
+        # Use normal learning rate for all trainable parameters
+        print(f"Using learning rate: {self.args.lr}")
         
         optimizer = optim.AdamW(
             self.model.get_trainable_parameters(),
@@ -217,14 +217,7 @@ class Trainer:
             weight_decay=0.01,
         )
         
-        # Freeze light projection layer to prevent NaN issues
-        # This allows training the main UNet while keeping conditioning stable
-        for name, param in self.model.named_parameters():
-            if 'light_projection' in name:
-                param.requires_grad = False
-                print(f"  Frozen: {name}")
-        
-        print("✓ Optimizer created (pure FP16 with frozen light projection)")
+        print("✓ Optimizer created (pure FP16)")
         return optimizer
 
     def _create_scheduler(self):
