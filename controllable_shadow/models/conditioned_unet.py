@@ -66,6 +66,7 @@ class ConditionedSDXLUNet(nn.Module):
         # Project light embeddings to SDXL's time embedding dimension (1280)
         # CRITICAL: Keep in FP16 to match everything else, use small init to prevent explosion
         self.light_projection = nn.Linear(768, 1280)
+        print(f"Light projection: {self.light_projection.weight.dtype}")
 
         # Initialize with very small weights to prevent gradient explosion
         with torch.no_grad():

@@ -121,11 +121,9 @@ class Trainer:
         self.mem_profiler = MemoryProfiler()
         self.perf_profiler = PerformanceProfiler()
 
-        # Use autocast for forward pass to keep sensitive ops in FP32
-        # Pure FP16 training - no mixed precision
-        # Mixed precision setup
-        self.scaler = torch.cuda.amp.GradScaler()
-        self.use_amp = True  # Enable smart autocast
+        # Pure FP16 training - no mixed precision or autocast
+        self.scaler = None
+        self.use_amp = False
 
         # Resume if specified
         if args.resume_from:
@@ -155,16 +153,13 @@ class Trainer:
         # Move to device
         model = model.to(self.device)
 
-        # Hybrid precision with autocast
+        # Pure FP16 training for maximum memory efficiency
         # UNet weights: FP16 (memory efficient)
-        # UNet operations: Autocast (FP16 for matmul/conv, FP32 for softmax/norm)
-        # VAE: FP32 (numerically stable, autocast disabled)
-        # This balances speed, memory, and stability
-        print("\n🔧 Hybrid precision training with autocast")
+        # VAE: FP32 (numerically stable)
+        print("\n🔧 Pure FP16 training")
         print("   ✓ UNet weights in FP16")
-        print("   ✓ UNet ops use autocast (selective FP16/FP32)")
-        print("   ✓ VAE in FP32 (autocast disabled)")
-        print("   ✓ GradScaler enabled for stability")
+        print("   ✓ VAE in FP32 (numerically stable)")
+        print("   ✓ No mixed precision overhead")
 
         # Ensure VAE is frozen
         model.freeze_vae()
@@ -211,8 +206,9 @@ class Trainer:
         )
 
     def _create_optimizer(self) -> optim.Optimizer:
-        """Create AdamW optimizer with smart mixed precision."""
-        print(f"Using learning rate: {self.args.lr} (smart mixed precision)")
+        """Create AdamW optimizer as per paper."""
+        # Use normal learning rate since light projection is frozen
+        print(f"Using learning rate: {self.args.lr} (light projection frozen)")
         
         optimizer = optim.AdamW(
             self.model.get_trainable_parameters(),
@@ -221,7 +217,14 @@ class Trainer:
             weight_decay=0.01,
         )
         
-        print("✓ Optimizer created (mixed precision: autocast handles FP16/FP32 automatically)")
+        # Freeze light projection layer to prevent NaN issues
+        # This allows training the main UNet while keeping conditioning stable
+        for name, param in self.model.named_parameters():
+            if 'light_projection' in name:
+                param.requires_grad = False
+                print(f"  Frozen: {name}")
+        
+        print("✓ Optimizer created (pure FP16 with frozen light projection)")
         return optimizer
 
     def _create_scheduler(self):
@@ -274,25 +277,15 @@ class Trainer:
         phi = batch['phi'].to(self.device)
         size = batch['size'].to(self.device)
 
-        # Forward pass with autocast for mixed precision
-        # Autocast selectively runs ops in FP16 where safe, FP32 where needed
-        if self.use_amp:
-            with torch.cuda.amp.autocast():
-                loss_dict = self.model.compute_rectified_flow_loss(
-                    object_image, mask, shadow_map, theta, phi, size
-                )
-        else:
-            loss_dict = self.model.compute_rectified_flow_loss(
-                object_image, mask, shadow_map, theta, phi, size
-            )
+        # Forward pass (pure FP16)
+        loss_dict = self.model.compute_rectified_flow_loss(
+            object_image, mask, shadow_map, theta, phi, size
+        )
 
         loss = loss_dict['loss'] / self.args.gradient_accumulation
 
-        # Backward pass with gradient scaling
-        if self.use_amp:
-            self.scaler.scale(loss).backward()
-        else:
-            loss.backward()
+        # Backward pass (pure FP16)
+        loss.backward()
 
         return {'loss': loss_dict['loss'].item()}
 
@@ -322,29 +315,14 @@ class Trainer:
                             print(f"    [ERROR] Gradient has NaN/Inf! Zeroing.")
                             param.grad.zero_()
 
-                # Gradient clipping and optimizer step
-                if self.use_amp:
-                    # Unscale gradients before clipping
-                    self.scaler.unscale_(self.optimizer)
-                    
-                    # Gradient clipping
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.get_trainable_parameters(),
-                        max_norm=1.0
-                    )
-                    
-                    # Optimizer step with scaler
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    # Pure FP16 gradient clipping
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.get_trainable_parameters(),
-                        max_norm=0.1
-                    )
-                    
-                    # Optimizer step (pure FP16)
-                    self.optimizer.step()
+                # Gradient clipping (pure FP16)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.get_trainable_parameters(),
+                    max_norm=1.0
+                )
+                
+                # Optimizer step (pure FP16)
+                self.optimizer.step()
 
                 # DEBUG: Check projection layer after optimizer step
                 for name, param in self.model.named_parameters():
