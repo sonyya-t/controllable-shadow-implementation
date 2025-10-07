@@ -68,10 +68,10 @@ class ConditionedSDXLUNet(nn.Module):
         self.light_projection = nn.Linear(768, 1280)
         print(f"Light projection: {self.light_projection.weight.dtype}")
 
-        # Initialize with very small weights to prevent gradient explosion
+        # Initialize with extremely small weights to prevent gradient explosion in FP16
         with torch.no_grad():
             # Use normal initialization with very small std for FP16 stability
-            nn.init.normal_(self.light_projection.weight, mean=0.0, std=0.001)
+            nn.init.normal_(self.light_projection.weight, mean=0.0, std=0.0001)
             if self.light_projection.bias is not None:
                 nn.init.zeros_(self.light_projection.bias)
 

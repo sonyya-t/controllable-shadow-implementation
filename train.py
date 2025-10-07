@@ -233,7 +233,7 @@ class Trainer:
         
         param_groups.append({
             'params': light_projection_params,
-            'lr': self.args.lr * 0.1,  # 10x smaller learning rate for stability
+            'lr': self.args.lr * 0.01,  # 100x smaller learning rate for stability
             'name': 'light_projection'
         })
         
@@ -245,7 +245,7 @@ class Trainer:
         
         print(f"✓ Optimizer created (pure FP16)")
         print(f"  - UNet params: {len(unet_params)} with lr={self.args.lr}")
-        print(f"  - Light projection params: {len(light_projection_params)} with lr={self.args.lr * 0.1}")
+        print(f"  - Light projection params: {len(light_projection_params)} with lr={self.args.lr * 0.01}")
         return optimizer
 
     def _create_scheduler(self):
