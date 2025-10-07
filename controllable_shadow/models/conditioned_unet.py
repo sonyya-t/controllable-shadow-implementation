@@ -188,6 +188,17 @@ class ConditionedSDXLUNet(nn.Module):
                                     dtype=target_dtype).repeat(batch_size, 1),
         }
 
+        # Debug: Check what we're passing to SDXL
+        print(f"\n[DEBUG] Before SDXL UNet call:")
+        print(f"  sample shape: {sample.shape}, dtype: {sample.dtype}")
+        print(f"  timestep shape: {timestep.shape}, dtype: {timestep.dtype}")
+        print(f"  light_emb shape: {light_emb.shape}, dtype: {light_emb.dtype}")
+        print(f"  light_emb stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
+        print(f"  light_emb has NaN: {torch.isnan(light_emb).any()}")
+        print(f"  time_ids shape: {added_cond_kwargs['time_ids'].shape}, dtype: {added_cond_kwargs['time_ids'].dtype}")
+        print(f"  time_ids stats: min={added_cond_kwargs['time_ids'].min():.4f}, max={added_cond_kwargs['time_ids'].max():.4f}")
+        print(f"  time_ids has NaN: {torch.isnan(added_cond_kwargs['time_ids']).any()}")
+
         # Forward through UNet
         # SDXL will handle timestep embedding internally
         # Ensure timestep matches UNet dtype (FP16)
@@ -206,6 +217,12 @@ class ConditionedSDXLUNet(nn.Module):
         # Extract the tensor
         if isinstance(output, tuple):
             output = output[0]
+
+        # Debug: Check SDXL output
+        print(f"\n[DEBUG] After SDXL UNet call:")
+        print(f"  output shape: {output.shape}, dtype: {output.dtype}")
+        print(f"  output stats: min={output.min():.4f}, max={output.max():.4f}, mean={output.mean():.4f}")
+        print(f"  output has NaN: {torch.isnan(output).any()}")
 
         if return_dict:
             return {"sample": output}
