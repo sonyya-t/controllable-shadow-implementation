@@ -55,6 +55,7 @@ class SDXLUNetForShadows(nn.Module):
         self.unet = UNet2DConditionModel.from_pretrained(
             pretrained_model_name,
             subfolder="unet",
+            torch_dtype=torch.float16
         )
 
         # Store original config
