@@ -106,10 +106,15 @@ class ShadowDiffusionModel(nn.Module):
         Returns:
             Predicted output (B, 4, h, w)
         """
+        print(f"[FORWARD] Input shapes: obj={object_image.shape}, mask={mask.shape}, t={timestep.shape}")
+        print(f"[FORWARD] Light params: θ={theta[0]:.1f}°, φ={phi[0]:.1f}°, s={size[0]:.1f}")
+        print(f"[FORWARD] Input stats: obj[{object_image.min():.3f}, {object_image.max():.3f}], mask[{mask.min():.1f}, {mask.max():.1f}]")
+
         # Prepare 9-channel input
         unet_input = self.vae_pipeline.prepare_unet_input(
             object_image, mask, noise
         )
+        print(f"[FORWARD] UNet input: shape={unet_input.shape}, dtype={unet_input.dtype}, range=[{unet_input.min():.3f}, {unet_input.max():.3f}]")
 
         # Forward through conditioned UNet
         output = self.unet(
@@ -119,6 +124,7 @@ class ShadowDiffusionModel(nn.Module):
             phi=phi,
             size=size,
         )
+        print(f"[FORWARD] Output: shape={output.shape}, range=[{output.min():.3f}, {output.max():.3f}], has_nan={torch.isnan(output).any()}, has_inf={torch.isinf(output).any()}")
 
         return output
 
@@ -151,14 +157,20 @@ class ShadowDiffusionModel(nn.Module):
         batch_size = object_image.shape[0]
         device = object_image.device
 
+        print(f"\n[LOSS] === Rectified Flow Loss Computation ===")
+        print(f"[LOSS] Batch size: {batch_size}, Device: {device}")
+
         # Encode target shadow to latent space (x_1, clean target)
         x1 = self.vae_pipeline.encode_shadow(shadow_map_target)
+        print(f"[LOSS] x1 (target): shape={x1.shape}, mean={x1.mean():.4f}, std={x1.std():.4f}")
 
         # Sample random noise (x_0, noise source)
         x0 = torch.randn_like(x1)
+        print(f"[LOSS] x0 (noise): shape={x0.shape}, mean={x0.mean():.4f}, std={x0.std():.4f}")
 
         # Sample random timestep t ~ Uniform(0, 1)
         t = torch.rand(batch_size, device=device)
+        print(f"[LOSS] timestep t: {t.cpu().numpy()}")
 
         # Linear interpolation with bridge noise (as per paper Section 3.2.2):
         # x_t = σ(t)·x_0 + (1-σ(t))·x_1 + σ_bridge·√(σ(t)·(1-σ(t)))·ε
@@ -171,14 +183,19 @@ class ShadowDiffusionModel(nn.Module):
             bridge_noise = torch.randn_like(x0)
             noise_scale = torch.sqrt(t_broadcast * (1 - t_broadcast))
             xt = xt + self.bridge_noise_sigma * noise_scale * bridge_noise
+            print(f"[LOSS] Bridge noise added: sigma={self.bridge_noise_sigma}")
+
+        print(f"[LOSS] x_t (interpolated): mean={xt.mean():.4f}, std={xt.std():.4f}")
 
         # Prepare input: concatenate [xt, object_latent, mask]
         object_latent = self.vae_pipeline.encode_object(object_image)
+        print(f"[LOSS] object_latent: shape={object_latent.shape}, mean={object_latent.mean():.4f}, std={object_latent.std():.4f}")
 
         # Resize mask to latent size
         mask_latent = self.vae_pipeline.mask_processor.resize_to_latent(
             mask, self.latent_size
         )
+        print(f"[LOSS] mask_latent: shape={mask_latent.shape}, mean={mask_latent.mean():.4f}")
 
         # Concatenate all: [xt(4) + object(4) + mask(1)] = 9 channels
         unet_input = self.vae_pipeline.concatenator.concatenate(
@@ -188,9 +205,11 @@ class ShadowDiffusionModel(nn.Module):
         # Convert input to UNet dtype (FP16 if UNet is FP16)
         unet_dtype = next(self.unet.parameters()).dtype
         unet_input = unet_input.to(dtype=unet_dtype)
+        print(f"[LOSS] unet_input: shape={unet_input.shape}, dtype={unet_dtype}")
         # Keep timestep as FP32 - SDXL handles conversion internally
 
         # Predict velocity v_θ(x_t)
+        print(f"[LOSS] Calling UNet...")
         predicted_velocity = self.unet(
             sample=unet_input,
             timestep=t,
@@ -198,12 +217,21 @@ class ShadowDiffusionModel(nn.Module):
             phi=phi,
             size=size,
         )
+        print(f"[LOSS] predicted_velocity: shape={predicted_velocity.shape}, mean={predicted_velocity.mean():.4f}, std={predicted_velocity.std():.4f}")
+        print(f"[LOSS] predicted_velocity: has_nan={torch.isnan(predicted_velocity).any()}, has_inf={torch.isinf(predicted_velocity).any()}")
 
         # Target velocity: x_1 - x_0
         target_velocity = x1 - x0
+        print(f"[LOSS] target_velocity: mean={target_velocity.mean():.4f}, std={target_velocity.std():.4f}")
 
         # Rectified flow loss: MSE between predicted and target velocity
-        loss = torch.nn.functional.mse_loss(predicted_velocity, target_velocity)
+        # Convert to FP32 for stable loss computation
+        loss = torch.nn.functional.mse_loss(
+            predicted_velocity.float(),
+            target_velocity.float()
+        )
+        print(f"[LOSS] Final loss: {loss.item():.6f} (computed in FP32)")
+        print(f"[LOSS] =========================================\n")
 
         return {
             "loss": loss,
