@@ -41,6 +41,7 @@ class ShadowDiffusionModel(nn.Module):
         latent_size: Optional[Tuple[int, int]] = None,
         image_size: Tuple[int, int] = (1024, 1024),
         use_blob_conditioning: bool = False,
+        bridge_noise_sigma: float = 0.1,
     ):
         """
         Initialize shadow diffusion model.
@@ -52,6 +53,7 @@ class ShadowDiffusionModel(nn.Module):
             latent_size: Latent space size (auto-calculated from image_size if None)
             image_size: Output image size
             use_blob_conditioning: Use blob instead of embeddings (ablation)
+            bridge_noise_sigma: Bridge noise scale (default: 0.1, paper Section 3.2.2)
         """
         super().__init__()
 
@@ -62,6 +64,7 @@ class ShadowDiffusionModel(nn.Module):
         self.latent_size = latent_size
         self.image_size = image_size
         self.use_blob_conditioning = use_blob_conditioning
+        self.bridge_noise_sigma = bridge_noise_sigma
 
         # Core components
         self.unet = ConditionedSDXLUNet(
@@ -76,6 +79,7 @@ class ShadowDiffusionModel(nn.Module):
         )
 
         print("✓ Shadow Diffusion Model initialized")
+        print(f"  - Bridge noise sigma: {bridge_noise_sigma}")
 
     def forward(
         self,
