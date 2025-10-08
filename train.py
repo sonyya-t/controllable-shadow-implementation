@@ -121,9 +121,13 @@ class Trainer:
         self.mem_profiler = MemoryProfiler()
         self.perf_profiler = PerformanceProfiler()
 
-        # Pure FP16 training - no mixed precision or autocast
-        self.scaler = None
-        self.use_amp = False
+        # Use AMP for mixed precision training
+        self.use_amp = args.mixed_precision
+        if self.use_amp:
+            from torch.cuda.amp import GradScaler
+            self.scaler = GradScaler()
+        else:
+            self.scaler = None
 
         # Resume if specified
         if args.resume_from:
@@ -138,7 +142,7 @@ class Trainer:
         print(f"Learning rate: {args.lr}")
         print(f"Max iterations: {args.max_iterations}")
         print(f"Device: {self.device}")
-        print(f"Mixed precision: False (Pure FP16)")
+        print(f"Mixed precision (AMP): {self.use_amp}")
         print(f"Gradient checkpointing: {args.gradient_checkpointing}")
         print(f"Gradient accumulation: {args.gradient_accumulation}")
         print(f"{'='*70}\n")
@@ -153,13 +157,11 @@ class Trainer:
         # Move to device
         model = model.to(self.device)
 
-        # Pure FP16 training for maximum memory efficiency
-        # UNet weights: FP16 (memory efficient)
-        # VAE: FP32 (numerically stable)
-        print("\n🔧 Pure FP16 training")
-        print("   ✓ UNet weights in FP16")
-        print("   ✓ VAE in FP32 (numerically stable)")
-        print("   ✓ No mixed precision overhead")
+        # Model precision
+        print("\n🔧 Model Precision")
+        print("   ✓ VAE: FP32 (numerically stable)")
+        print("   ✓ UNet: Uses AMP if enabled")
+        print("   ✓ Conditioning: FP32 (precision)")
 
         # Ensure VAE is frozen
         model.freeze_vae()
@@ -207,45 +209,18 @@ class Trainer:
 
     def _create_optimizer(self) -> optim.Optimizer:
         """Create AdamW optimizer as per paper."""
-        # Use normal learning rate for all trainable parameters
-        print(f"Using learning rate: {self.args.lr}")
-        
-        # Create parameter groups with different learning rates
-        param_groups = []
-        
-        # Main UNet parameters with normal learning rate
-        unet_params = []
-        light_projection_params = []
-        
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                if 'light_projection' in name:
-                    light_projection_params.append(param)
-                else:
-                    unet_params.append(param)
-        
-        # Use smaller learning rate for light projection to prevent instability
-        param_groups.append({
-            'params': unet_params,
-            'lr': self.args.lr,
-            'name': 'unet'
-        })
-        
-        param_groups.append({
-            'params': light_projection_params,
-            'lr': self.args.lr * 0.001,  # 1000x smaller learning rate for stability
-            'name': 'light_projection'
-        })
-        
+        # Paper uses single learning rate (1e-5) for ALL parameters
         optimizer = optim.AdamW(
-            param_groups,
+            self.model.get_trainable_parameters(),
+            lr=self.args.lr,
             betas=(0.9, 0.999),
             weight_decay=0.01,
         )
-        
-        print(f"✓ Optimizer created (pure FP16)")
-        print(f"  - UNet params: {len(unet_params)} with lr={self.args.lr}")
-        print(f"  - Light projection params: {len(light_projection_params)} with lr={self.args.lr * 0.001}")
+
+        num_params = sum(p.numel() for p in self.model.get_trainable_parameters())
+        print(f"✓ Optimizer created")
+        print(f"  - Learning rate: {self.args.lr} (same for all parameters)")
+        print(f"  - Trainable parameters: {num_params:,}")
         return optimizer
 
     def _create_scheduler(self):
@@ -298,15 +273,25 @@ class Trainer:
         phi = batch['phi'].to(self.device)
         size = batch['size'].to(self.device)
 
-        # Forward pass (pure FP16)
-        loss_dict = self.model.compute_rectified_flow_loss(
-            object_image, mask, shadow_map, theta, phi, size
-        )
+        # Forward pass with AMP
+        if self.use_amp:
+            from torch.cuda.amp import autocast
+            with autocast():
+                loss_dict = self.model.compute_rectified_flow_loss(
+                    object_image, mask, shadow_map, theta, phi, size
+                )
+        else:
+            loss_dict = self.model.compute_rectified_flow_loss(
+                object_image, mask, shadow_map, theta, phi, size
+            )
 
         loss = loss_dict['loss'] / self.args.gradient_accumulation
 
-        # Backward pass (pure FP16)
-        loss.backward()
+        # Backward pass with scaling
+        if self.use_amp:
+            self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         return {'loss': loss_dict['loss'].item()}
 
@@ -326,30 +311,22 @@ class Trainer:
 
             # Gradient accumulation
             if (batch_idx + 1) % self.args.gradient_accumulation == 0:
-                # DEBUG: Check projection layer before optimizer step
-                for name, param in self.model.named_parameters():
-                    if 'light_projection' in name and param.grad is not None:
-                        print(f"\n  [PRE-OPTIMIZER] {name}:")
-                        print(f"    Weight: dtype={param.dtype}, min={param.min():.6f}, max={param.max():.6f}, has_nan={torch.isnan(param).any()}")
-                        print(f"    Gradient: dtype={param.grad.dtype}, min={param.grad.min():.6f}, max={param.grad.max():.6f}, has_nan={torch.isnan(param.grad).any()}")
-                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                            print(f"    [ERROR] Gradient has NaN/Inf! Zeroing.")
-                            param.grad.zero_()
+                # Unscale gradients for clipping (if using AMP)
+                if self.use_amp:
+                    self.scaler.unscale_(self.optimizer)
 
-                # Gradient clipping (pure FP16)
+                # Gradient clipping
                 torch.nn.utils.clip_grad_norm_(
                     self.model.get_trainable_parameters(),
-                    max_norm=1.0
+                    max_norm=10.0  # Increased for FP16 stability
                 )
-                
-                # Optimizer step (pure FP16)
-                self.optimizer.step()
 
-                # DEBUG: Check projection layer after optimizer step
-                for name, param in self.model.named_parameters():
-                    if 'light_projection' in name:
-                        print(f"\n  [POST-OPTIMIZER] {name}:")
-                        print(f"    Weight: dtype={param.dtype}, min={param.min():.6f}, max={param.max():.6f}, has_nan={torch.isnan(param).any()}")
+                # Optimizer step
+                if self.use_amp:
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    self.optimizer.step()
 
                 self.optimizer.zero_grad()
                 self.scheduler.step()

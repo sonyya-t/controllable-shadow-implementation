@@ -156,10 +156,17 @@ class ShadowDiffusionModel(nn.Module):
         # Sample random timestep t ~ Uniform(0, 1)
         t = torch.rand(batch_size, device=device)
 
-        # Linear interpolation: x_t = t*x_1 + (1-t)*x_0
-        # Rectified flow goes from x_0 (noise) at t=0 to x_1 (clean) at t=1
+        # Linear interpolation with bridge noise (as per paper Section 3.2.2):
+        # x_t = σ(t)·x_0 + (1-σ(t))·x_1 + σ_bridge·√(σ(t)·(1-σ(t)))·ε
+        # where σ(t) = 1-t for rectified flow
         t_broadcast = t.view(batch_size, 1, 1, 1)
         xt = t_broadcast * x1 + (1 - t_broadcast) * x0
+
+        # Add bridge noise for training stability
+        if self.bridge_noise_sigma > 0:
+            bridge_noise = torch.randn_like(x0)
+            noise_scale = torch.sqrt(t_broadcast * (1 - t_broadcast))
+            xt = xt + self.bridge_noise_sigma * noise_scale * bridge_noise
 
         # Prepare input: concatenate [xt, object_latent, mask]
         object_latent = self.vae_pipeline.encode_object(object_image)
