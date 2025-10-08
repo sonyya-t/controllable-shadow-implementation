@@ -50,7 +50,7 @@ class SDXLUNetForShadows(nn.Module):
         self.conditioning_dim = conditioning_dim
         self.pretrained_model_name = pretrained_model_name
 
-        # Load base SDXL UNet (default dtype)
+        # Load base SDXL UNet
         print(f"Loading SDXL UNet from {pretrained_model_name}...")
         self.unet = UNet2DConditionModel.from_pretrained(
             pretrained_model_name,
@@ -65,7 +65,11 @@ class SDXLUNetForShadows(nn.Module):
         self._remove_cross_attention()
         self._modify_input_conv()
 
+        # Ensure ALL components are FP16 (including time_embedding layers)
+        self.unet = self.unet.half()
+
         print("✓ SDXL UNet loaded and modified successfully!")
+        print("✓ All UNet parameters converted to FP16")
 
     def _remove_cross_attention(self):
         """

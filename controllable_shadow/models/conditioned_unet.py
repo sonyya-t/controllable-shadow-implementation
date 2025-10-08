@@ -127,22 +127,28 @@ class ConditionedSDXLUNet(nn.Module):
         """
         batch_size = sample.shape[0]
 
-        # Ensure timestep is correct shape
+        # Get sample dtype for matching
+        sample_dtype = sample.dtype
+
+        # Ensure timestep is correct shape (keep as float32 for SDXL internals)
         if timestep.dim() == 0:
             timestep = timestep.expand(batch_size)
+        # Don't convert timestep dtype - SDXL handles it internally
 
         # 1. Encode light parameters (θ, φ, s) → 1280-dim
         light_emb = self.encode_light_parameters(theta, phi, size)  # (B, 1280)
+        light_emb = light_emb.to(dtype=sample_dtype)  # Match sample dtype
 
         # 2. Create dummy encoder_hidden_states (not used since cross-attention removed)
-        encoder_hidden_states = torch.zeros(batch_size, 77, 768, device=sample.device)
+        encoder_hidden_states = torch.zeros(batch_size, 77, 768,
+                                           device=sample.device, dtype=sample_dtype)
 
         # 3. SDXL uses added_cond_kwargs to inject additional embeddings
         # time_ids format: [h_orig, w_orig, crop_top, crop_left, h_target, w_target]
         added_cond_kwargs = {
             "text_embeds": light_emb,  # Light embeddings (B, 1280)
             "time_ids": torch.tensor([[1024, 1024, 0, 0, 1024, 1024]],
-                                    device=sample.device).repeat(batch_size, 1),
+                                    device=sample.device, dtype=sample_dtype).repeat(batch_size, 1),
         }
 
         # 4. Forward through UNet

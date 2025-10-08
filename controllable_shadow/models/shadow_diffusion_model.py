@@ -185,6 +185,11 @@ class ShadowDiffusionModel(nn.Module):
             xt, object_latent, mask_latent
         )
 
+        # Convert input to UNet dtype (FP16 if UNet is FP16)
+        unet_dtype = next(self.unet.parameters()).dtype
+        unet_input = unet_input.to(dtype=unet_dtype)
+        # Keep timestep as FP32 - SDXL handles conversion internally
+
         # Predict velocity v_θ(x_t)
         predicted_velocity = self.unet(
             sample=unet_input,
@@ -252,6 +257,9 @@ class ShadowDiffusionModel(nn.Module):
             mask, self.latent_size
         )
 
+        # Get UNet dtype for consistency
+        unet_dtype = next(self.unet.parameters()).dtype
+
         if num_steps == 1:
             # Single-step sampling (fast inference)
             # Start at t=0 (pure noise x_0) and integrate to t=1 (clean x_1)
@@ -259,8 +267,9 @@ class ShadowDiffusionModel(nn.Module):
             unet_input = self.vae_pipeline.concatenator.concatenate(
                 x, object_latent, mask_latent
             )
+            unet_input = unet_input.to(dtype=unet_dtype)
 
-            t = torch.zeros(batch_size, device=device)  # t=0 (start from noise)
+            t = torch.zeros(batch_size, device=device)  # t=0, keep as FP32
             velocity = self.unet(
                 sample=unet_input,
                 timestep=t,
@@ -278,11 +287,12 @@ class ShadowDiffusionModel(nn.Module):
 
             for step in range(num_steps):
                 t_current = step * dt
-                t = torch.full((batch_size,), t_current, device=device)
+                t = torch.full((batch_size,), t_current, device=device)  # Keep as FP32
 
                 unet_input = self.vae_pipeline.concatenator.concatenate(
                     x, object_latent, mask_latent
                 )
+                unet_input = unet_input.to(dtype=unet_dtype)
 
                 velocity = self.unet(
                     sample=unet_input,
