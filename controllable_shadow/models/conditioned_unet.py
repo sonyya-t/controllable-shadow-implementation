@@ -64,25 +64,17 @@ class ConditionedSDXLUNet(nn.Module):
         )
 
         # Project light embeddings to SDXL's time embedding dimension (1280)
-        # CRITICAL: Keep in FP16 to match everything else, use small init to prevent explosion
         self.light_projection = nn.Linear(768, 1280)
-        print(f"Light projection: {self.light_projection.weight.dtype}")
 
-        # Initialize with extremely small weights to prevent gradient explosion in FP16
-        with torch.no_grad():
-            # Use normal initialization with extremely small std for FP16 stability
-            nn.init.normal_(self.light_projection.weight, mean=0.0, std=0.00001)
-            if self.light_projection.bias is not None:
-                nn.init.zeros_(self.light_projection.bias)
-
-        # Convert to FP16 to match UNet and training dtype
-        self.light_projection = self.light_projection.half()
+        # Xavier initialization for stable training
+        nn.init.xavier_uniform_(self.light_projection.weight)
+        if self.light_projection.bias is not None:
+            nn.init.zeros_(self.light_projection.bias)
 
         print(f"✓ Conditioned SDXL UNet initialized")
-        print(f"  - Light encoder: FP16")
-        print(f"  - Light projection: FP16 (small init gain=0.01)")
-        print(f"  - UNet: FP16")
-        print(f"  - Everything: FP16 (pure FP16 pipeline)")
+        print(f"  - Light encoder: sinusoidal embeddings")
+        print(f"  - Light projection: 768 → 1280 dim")
+        print(f"  - Conditioning strategy: {conditioning_strategy}")
 
     def encode_light_parameters(
         self,
@@ -101,24 +93,11 @@ class ConditionedSDXLUNet(nn.Module):
         Returns:
             Light embeddings projected to 1280-dim (B, 1280)
         """
-        # Encode to 768-dim (outputs FP16 now)
-        light_emb = self.light_encoder(theta, phi, size)  # (B, 768) FP16
+        # Encode to 768-dim using sinusoidal embeddings
+        light_emb = self.light_encoder(theta, phi, size)  # (B, 768)
 
-        print(f"\n[DEBUG] encode_light_parameters:")
-        print(f"  After light_encoder (FP16): shape={light_emb.shape}, dtype={light_emb.dtype}")
-        print(f"  Stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
-        print(f"  Has NaN: {torch.isnan(light_emb).any()}")
-
-        # Project in FP16
-        light_emb_projected = self.light_projection(light_emb)  # (B, 1280) FP16
-
-        print(f"  After projection (FP16): shape={light_emb_projected.shape}, dtype={light_emb_projected.dtype}")
-        print(f"  Stats: min={light_emb_projected.min():.4f}, max={light_emb_projected.max():.4f}, mean={light_emb_projected.mean():.4f}")
-        print(f"  Has NaN: {torch.isnan(light_emb_projected).any()}")
-
-        # Check projection weights for NaN
-        proj_weight = self.light_projection.weight
-        print(f"  Projection weights: dtype={proj_weight.dtype}, has NaN: {torch.isnan(proj_weight).any()}")
+        # Project to 1280-dim
+        light_emb_projected = self.light_projection(light_emb)  # (B, 1280)
 
         return light_emb_projected
 
@@ -152,59 +131,21 @@ class ConditionedSDXLUNet(nn.Module):
         if timestep.dim() == 0:
             timestep = timestep.expand(batch_size)
 
-        # 1. Encode light parameters (θ, φ, s) → 1280-dim in FP16
-        light_emb = self.encode_light_parameters(theta, phi, size)  # (B, 1280) FP16
+        # 1. Encode light parameters (θ, φ, s) → 1280-dim
+        light_emb = self.encode_light_parameters(theta, phi, size)  # (B, 1280)
 
-        print(f"\n[DEBUG] ConditionedUNet - Light parameters:")
-        print(f"  theta: {theta}, phi: {phi}, size: {size}")
-        print(f"  light_emb shape: {light_emb.shape}, dtype: {light_emb.dtype}")
-        print(f"  light_emb stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
-        print(f"  light_emb has NaN: {torch.isnan(light_emb).any()}")
+        # 2. Create dummy encoder_hidden_states (not used since cross-attention removed)
+        encoder_hidden_states = torch.zeros(batch_size, 77, 768, device=sample.device)
 
-        # 2. Validate embedding dimension
-        expected_dim = 1280  # SDXL time embedding dimension
-        if light_emb.shape[-1] != expected_dim:
-            raise RuntimeError(
-                f"Light embedding has wrong dimension: {light_emb.shape[-1]}, expected {expected_dim}"
-            )
-
-        # 3. Run UNet forward pass
-        # Ensure sample and timestep match UNet dtype (FP16)
-        target_dtype = sample.dtype
-
-        # Create dummy encoder_hidden_states (not used since cross-attention removed)
-        encoder_hidden_states = torch.zeros(batch_size, 77, 768, device=sample.device, dtype=target_dtype)
-
-        # SDXL uses added_cond_kwargs to inject additional embeddings
-        # SDXL's add_embedding: concat(text_embeds[1280], time_ids[6]) → Linear → 1280
-        # Then: timestep_emb + add_emb
-        # Everything in FP16 for consistency
+        # 3. SDXL uses added_cond_kwargs to inject additional embeddings
+        # time_ids format: [h_orig, w_orig, crop_top, crop_left, h_target, w_target]
         added_cond_kwargs = {
-            "text_embeds": light_emb,  # Light embeddings (B, 1280) in FP16
-            # time_ids format: [h_orig, w_orig, crop_top, crop_left, h_target, w_target]
-            # Use image size (1024) for all to avoid NaN from zeros, in FP16
+            "text_embeds": light_emb,  # Light embeddings (B, 1280)
             "time_ids": torch.tensor([[1024, 1024, 0, 0, 1024, 1024]],
-                                    device=sample.device,
-                                    dtype=target_dtype).repeat(batch_size, 1),
+                                    device=sample.device).repeat(batch_size, 1),
         }
 
-        # Debug: Check what we're passing to SDXL
-        print(f"\n[DEBUG] Before SDXL UNet call:")
-        print(f"  sample shape: {sample.shape}, dtype: {sample.dtype}")
-        print(f"  timestep shape: {timestep.shape}, dtype: {timestep.dtype}")
-        print(f"  light_emb shape: {light_emb.shape}, dtype: {light_emb.dtype}")
-        print(f"  light_emb stats: min={light_emb.min():.4f}, max={light_emb.max():.4f}, mean={light_emb.mean():.4f}")
-        print(f"  light_emb has NaN: {torch.isnan(light_emb).any()}")
-        print(f"  time_ids shape: {added_cond_kwargs['time_ids'].shape}, dtype: {added_cond_kwargs['time_ids'].dtype}")
-        print(f"  time_ids stats: min={added_cond_kwargs['time_ids'].min():.4f}, max={added_cond_kwargs['time_ids'].max():.4f}")
-        print(f"  time_ids has NaN: {torch.isnan(added_cond_kwargs['time_ids']).any()}")
-
-        # Forward through UNet
-        # SDXL will handle timestep embedding internally
-        # Ensure timestep matches UNet dtype (FP16)
-        if timestep.dtype != sample.dtype:
-            timestep = timestep.to(sample.dtype)
-
+        # 4. Forward through UNet
         output = self.unet(
             sample=sample,
             timestep=timestep,
@@ -214,15 +155,8 @@ class ConditionedSDXLUNet(nn.Module):
         )
 
         # When return_dict=False, SDXL returns tuple (sample,)
-        # Extract the tensor
         if isinstance(output, tuple):
             output = output[0]
-
-        # Debug: Check SDXL output
-        print(f"\n[DEBUG] After SDXL UNet call:")
-        print(f"  output shape: {output.shape}, dtype: {output.dtype}")
-        print(f"  output stats: min={output.min():.4f}, max={output.max():.4f}, mean={output.mean():.4f}")
-        print(f"  output has NaN: {torch.isnan(output).any()}")
 
         if return_dict:
             return {"sample": output}

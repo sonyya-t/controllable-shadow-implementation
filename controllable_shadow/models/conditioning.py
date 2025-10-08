@@ -57,10 +57,10 @@ class LightParameterConditioning(nn.Module):
             d: Embedding dimension (total)
 
         Returns:
-            Frequency tensor of shape (d//2,) in FP16
+            Frequency tensor of shape (d//2,)
         """
         half_dim = d // 2
-        i = torch.arange(half_dim, dtype=torch.float16)
+        i = torch.arange(half_dim, dtype=torch.float32)  # Always FP32 for numerical stability
 
         # Compute exponent: -(i·(i-1)) / (d/2·(d/2-1))
         numerator = i * (i - 1)
@@ -86,13 +86,11 @@ class LightParameterConditioning(nn.Module):
             x: Input scalar parameter(s) of shape (..., 1)
 
         Returns:
-            Encoded embeddings of shape (..., embedding_dim) in FP16
+            Encoded embeddings of shape (..., embedding_dim)
         """
-        # Keep in FP16 throughout
-        x_norm = x.half() if x.dtype != torch.float16 else x
-
+        # No dtype conversion - let PyTorch/AMP handle it
         # Compute sinusoidal frequencies
-        angles = self.omega_i[None, :] * x_norm[..., None]  # (..., d//2)
+        angles = self.omega_i[None, :] * x[..., None]  # (..., d//2)
 
         # Create sinusoidal embeddings
         embeddings = torch.cat([
